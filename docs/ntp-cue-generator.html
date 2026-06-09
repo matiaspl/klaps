@@ -5,7 +5,7 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 	<meta name="theme-color" content="#101317">
 	<link rel="icon" href="data:,">
-	<title>NTP Cue Generator</title>
+	<title>NTP Cue Generator v2</title>
 	<style>
 		:root {
 			color-scheme: dark;
@@ -271,7 +271,7 @@
 	</main>
 
 	<aside class="panel">
-		<h1>NTP Cue Generator</h1>
+		<h1>NTP Cue Generator v2</h1>
 
 		<div class="row">
 			<button id="startBtn" class="primary">Start</button>
@@ -279,15 +279,11 @@
 		</div>
 
 		<div class="group">
+			<label class="toggle"><input id="remoteTime" type="checkbox" checked> Remote time</label>
 			<div class="field">
 				<label for="timeEndpoint">Time endpoint</label>
 				<input id="timeEndpoint" value="time.php" placeholder="blank uses this device clock">
 			</div>
-			<div class="row">
-				<button id="syncBtn">Sync Clock</button>
-				<button id="lockBtn">Lock Screen</button>
-			</div>
-			<label class="toggle"><input id="autoSync" type="checkbox" checked> Auto sync while running</label>
 		</div>
 
 		<div class="group">
@@ -297,30 +293,18 @@
 					<input id="periodMs" type="number" min="1000" step="100" value="3000">
 				</div>
 				<div class="field">
-					<label for="leadMs">Schedule lead ms</label>
-					<input id="leadMs" type="number" min="500" step="100" value="2200">
-				</div>
-			</div>
-			<div class="row">
-				<div class="field">
-					<label for="visualMs">Visual cue ms</label>
-					<input id="visualMs" type="number" min="80" step="10" value="220">
-				</div>
-				<div class="field">
 					<label for="gain">Audio gain</label>
 					<input id="gain" type="number" min="0" max="1" step="0.05" value="0.35">
 				</div>
 			</div>
 			<label class="toggle"><input id="audioEnabled" type="checkbox" checked> Audio cues</label>
-			<button id="testAudioBtn">Test Audio</button>
-			<button id="testMediaBtn">Test Media Audio</button>
-			<label class="toggle"><input id="showData" type="checkbox" checked> Timestamp blocks</label>
 		</div>
 
 		<div class="group status">
 			<div class="status-line"><span>Clock source</span><span id="clockSource">local</span></div>
 			<div class="status-line"><span>Offset</span><span id="clockOffset">0.000 ms</span></div>
 			<div class="status-line"><span>RTT</span><span id="clockRtt">-</span></div>
+			<div class="status-line"><span>Audio probe</span><span id="audioProbe">pending</span></div>
 			<div class="status-line"><span>Audio latency</span><span id="audioLatency">-</span></div>
 			<div class="status-line"><span>Audio timing</span><span id="audioTiming">-</span></div>
 			<div class="status-line"><span>Audio state</span><span id="audioState">-</span></div>
@@ -345,6 +329,9 @@
 		const MARKER_TICK_MS = 6;
 		const MARKER_CHIRP_GAIN = 0.72;
 		const MARKER_TICK_GAIN = 0.28;
+		const AUDIO_PREROLL_MS = 180;
+		const AUDIO_PREROLL_GAIN = 0.012;
+		const AUDIO_KEEPALIVE_GAIN = 0.006;
 		const SYMBOL_MS = 70;
 		const GUARD_MS = 60;
 		const PAYLOAD_SYMBOLS = 5;
@@ -356,23 +343,18 @@
 		const QR_DATA_CODEWORDS = 44;
 		const QR_ECC_CODEWORDS = 26;
 		const QR_DISPLAY_LEAD_MS = 700;
+		const PROGRESS_WINDOW_MS = 1000;
+		const VIDEO_NEUTRAL = "#7f7f7f";
 
 		const el = {
 			canvas: document.getElementById("stage"),
 			startBtn: document.getElementById("startBtn"),
 			fullscreenBtn: document.getElementById("fullscreenBtn"),
-			lockBtn: document.getElementById("lockBtn"),
-			syncBtn: document.getElementById("syncBtn"),
-			testAudioBtn: document.getElementById("testAudioBtn"),
-			testMediaBtn: document.getElementById("testMediaBtn"),
+			remoteTime: document.getElementById("remoteTime"),
 			timeEndpoint: document.getElementById("timeEndpoint"),
-			autoSync: document.getElementById("autoSync"),
 			periodMs: document.getElementById("periodMs"),
-			leadMs: document.getElementById("leadMs"),
-			visualMs: document.getElementById("visualMs"),
 			gain: document.getElementById("gain"),
 			audioEnabled: document.getElementById("audioEnabled"),
-			showData: document.getElementById("showData"),
 			clockBadge: document.getElementById("clockBadge"),
 			nextBadge: document.getElementById("nextBadge"),
 			seqBadge: document.getElementById("seqBadge"),
@@ -380,6 +362,7 @@
 			clockSource: document.getElementById("clockSource"),
 			clockOffset: document.getElementById("clockOffset"),
 			clockRtt: document.getElementById("clockRtt"),
+			audioProbe: document.getElementById("audioProbe"),
 			audioLatency: document.getElementById("audioLatency"),
 			audioTiming: document.getElementById("audioTiming"),
 			audioState: document.getElementById("audioState"),
@@ -404,12 +387,14 @@
 			lastScheduledTargetMs: 0,
 			scheduled: new Map(),
 			activeAudioNodes: new Set(),
-			testMediaElement: null,
 			mediaHoldElement: null,
 			audioHoldSource: null,
+			audioSchedulerNode: null,
+			audioCueQueue: [],
 			audioPrimedAfterCue: false,
 			recentEvents: [],
 			offsetMs: 0,
+			runOffsetMs: 0,
 			offsetSamples: [],
 			qrCache: new Map(),
 			clockLabel: "local",
@@ -417,6 +402,13 @@
 			lastFrameMs: 0,
 			audioTimingLabel: "-",
 			lastAudioSchedule: "-",
+			audioProbeLabel: "pending",
+			audioProbeClass: "warn",
+			autoSync: true,
+			autoStart: true,
+			autoStartAttempted: false,
+			leadMs: 2200,
+			visualMs: 220,
 		};
 
 		function localEpochMs() {
@@ -424,11 +416,11 @@
 		}
 
 		function remoteNowMs() {
-			return localEpochMs() + state.offsetMs;
+			return localEpochMs() + (state.running ? state.runOffsetMs : state.offsetMs);
 		}
 
 		function remoteMsToPerfMs(remoteMs) {
-			return remoteMs - performance.timeOrigin - state.offsetMs;
+			return remoteMs - performance.timeOrigin - (state.running ? state.runOffsetMs : state.offsetMs);
 		}
 
 		function fmtMs(ms, digits = 3) {
@@ -541,17 +533,43 @@
 			return null;
 		}
 
-		async function syncClock() {
-			const endpoint = el.timeEndpoint.value.trim();
-			if (!endpoint) {
-				state.offsetMs = 0;
-				state.offsetSamples = [];
-				state.clockLabel = "local";
-				state.lastRttMs = 0;
+		function useRemoteTime() {
+			return el.remoteTime.checked && el.timeEndpoint.value.trim() !== "";
+		}
+
+		function setLocalClock() {
+			state.offsetMs = 0;
+			state.offsetSamples = [];
+			state.clockLabel = "local";
+			state.lastRttMs = 0;
+			updateStatus();
+		}
+
+		function updateTimeSourceControls() {
+			el.timeEndpoint.disabled = !el.remoteTime.checked;
+			if (!useRemoteTime())
+				setLocalClock();
+			else
 				updateStatus();
+		}
+
+		function resetRunClockSource() {
+			if (!state.running)
+				return;
+			state.runOffsetMs = state.offsetMs;
+			state.nextTargetMs = 0;
+			state.lastScheduledTargetMs = 0;
+			state.scheduled.clear();
+			scheduleDueEvents();
+		}
+
+		async function syncClock() {
+			if (!useRemoteTime()) {
+				setLocalClock();
 				return;
 			}
 
+			const endpoint = el.timeEndpoint.value.trim();
 			const t0 = localEpochMs();
 			const response = await fetch(endpoint, { cache: "no-store" });
 			const contentType = response.headers.get("content-type") || "";
@@ -731,22 +749,38 @@
 			return reference;
 		}
 
+		function nearSilentSample(index, sampleRate, gain) {
+			const t = index / sampleRate;
+			const ramp = Math.min(1, index / Math.max(1, Math.round(sampleRate * 0.02)));
+			const carrier = Math.sin(2 * Math.PI * 191 * t) * gain * ramp;
+			const dither = (((index * 48271) % 2147483647) / 2147483647 - 0.5) * gain * 0.08;
+			return carrier + dither;
+		}
+
 		function makePacketBuffer(sequence) {
 			const audio = state.audioContext;
 			const sampleRate = audio.sampleRate;
 			const marker = markerReference(sampleRate);
+			const prerollSamples = msToSamples(sampleRate, AUDIO_PREROLL_MS);
 			const markerSamples = marker.length;
 			const guardSamples = msToSamples(sampleRate, GUARD_MS);
 			const symbolSamples = msToSamples(sampleRate, SYMBOL_MS);
 			const symbolStride = symbolSamples + guardSamples;
-			const packetSamples = markerSamples + guardSamples + PAYLOAD_SYMBOLS * symbolStride;
+			const markerStart = prerollSamples;
+			const packetSamples = prerollSamples + markerSamples + guardSamples + PAYLOAD_SYMBOLS * symbolStride;
 			const buffer = audio.createBuffer(2, packetSamples, sampleRate);
 			const left = buffer.getChannelData(0);
 			const right = buffer.getChannelData(1);
 
+			for (let i = 0; i < prerollSamples; i++) {
+				const sample = nearSilentSample(i, sampleRate, AUDIO_PREROLL_GAIN);
+				left[i] = sample;
+				right[i] = sample;
+			}
+
 			for (let i = 0; i < markerSamples; i++) {
-				left[i] += marker[i];
-				right[i] += marker[i];
+				left[markerStart + i] += marker[i];
+				right[markerStart + i] += marker[i];
 			}
 
 			let payload = ((sequence & 0xff) << 8) | crc8(sequence & 0xff);
@@ -756,7 +790,7 @@
 				payload = Math.floor(payload / PAYLOAD_BASE);
 			}
 
-			const payloadStart = markerSamples + guardSamples;
+			const payloadStart = markerStart + markerSamples + guardSamples;
 			for (let symbol = 0; symbol < PAYLOAD_SYMBOLS; symbol++) {
 				const digit = digits[symbol];
 				const row = DTMF_ROWS[Math.floor(digit / DTMF_COLS.length)];
@@ -844,6 +878,69 @@
 			});
 		}
 
+		function startContinuousAudioScheduler() {
+			const audio = ensureAudioContext();
+			if (state.audioSchedulerNode)
+				return true;
+			if (typeof audio.createScriptProcessor !== "function")
+				throw new Error("Continuous audio scheduler is unavailable");
+
+			const node = audio.createScriptProcessor(1024, 0, 2);
+			node.onaudioprocess = (event) => {
+				const buffer = event.outputBuffer;
+				const sampleRate = buffer.sampleRate;
+				const left = buffer.getChannelData(0);
+				const right = buffer.getChannelData(1);
+				const playbackTime = Number.isFinite(event.playbackTime) ? event.playbackTime : audio.currentTime;
+				const blockStartFrame = Math.round(playbackTime * sampleRate);
+				const blockEndFrame = blockStartFrame + buffer.length;
+
+				for (let i = 0; i < buffer.length; i++) {
+					const sample = nearSilentSample(blockStartFrame + i, sampleRate, AUDIO_KEEPALIVE_GAIN);
+					left[i] = sample;
+					right[i] = sample;
+				}
+
+				for (const cue of state.audioCueQueue) {
+					const cueStart = cue.startFrame;
+					const cueEnd = cue.startFrame + cue.length;
+					if (cueEnd <= blockStartFrame || cueStart >= blockEndFrame)
+						continue;
+
+					const first = Math.max(0, cueStart - blockStartFrame);
+					const last = Math.min(buffer.length, cueEnd - blockStartFrame);
+					const cueOffset = blockStartFrame + first - cueStart;
+					for (let i = first; i < last; i++) {
+						const j = cueOffset + i - first;
+						left[i] += cue.left[j];
+						right[i] += cue.right[j];
+					}
+				}
+
+				let keep = 0;
+				for (const cue of state.audioCueQueue) {
+					if (cue.startFrame + cue.length > blockStartFrame)
+						state.audioCueQueue[keep++] = cue;
+					else
+						state.lastAudioSchedule = `ended seq=${cue.sequence & 0xff}`;
+				}
+				state.audioCueQueue.length = keep;
+			};
+			node.connect(state.masterGain);
+			state.audioSchedulerNode = node;
+			log("continuous audio scheduler");
+			return true;
+		}
+
+		function stopContinuousAudioScheduler() {
+			state.audioCueQueue = [];
+			if (!state.audioSchedulerNode)
+				return;
+			state.audioSchedulerNode.disconnect();
+			state.audioSchedulerNode.onaudioprocess = null;
+			state.audioSchedulerNode = null;
+		}
+
 		async function resumeAudioContext() {
 			const audio = ensureAudioContext();
 			state.lastAudioSchedule = "resume...";
@@ -852,55 +949,6 @@
 			state.masterGain.gain.value = Math.max(0, Math.min(1, readNumber(el.gain, 0.35)));
 			updateStatus();
 			return audio;
-		}
-
-		function playUnlockTone({ direct = false, duration = 0.35, frequency = 880, level = 0.24 } = {}) {
-			const audio = state.audioContext;
-			if (!audio || !state.masterGain)
-				return;
-
-			const osc = audio.createOscillator();
-			const gain = audio.createGain();
-			const now = audio.currentTime;
-			retainAudioNode(osc);
-			osc.frequency.value = frequency;
-			gain.gain.setValueAtTime(0.0001, now);
-			gain.gain.exponentialRampToValueAtTime(level, now + 0.02);
-			gain.gain.setValueAtTime(level, now + Math.max(0.03, duration - 0.08));
-			gain.gain.exponentialRampToValueAtTime(0.0001, now + duration);
-			osc.connect(gain);
-			gain.connect(direct ? audio.destination : state.masterGain);
-			osc.start(now);
-			osc.stop(now + duration + 0.02);
-			log("audio unlock tone");
-		}
-
-		function playGraphPrimeBuffer({ duration = 3.4, primeMs = 260, frequency = 1000, level = 0.16, holdLevel = 0.002 } = {}) {
-			const audio = state.audioContext;
-			if (!audio || !state.masterGain)
-				return;
-
-			const sampleRate = audio.sampleRate;
-			const samples = Math.max(1, Math.round(sampleRate * duration));
-			const primeSamples = Math.max(1, Math.round(sampleRate * primeMs / 1000));
-			const buffer = audio.createBuffer(2, samples, sampleRate);
-			const left = buffer.getChannelData(0);
-			const right = buffer.getChannelData(1);
-			for (let i = 0; i < samples; i++) {
-				const t = i / sampleRate;
-				const fade = Math.min(1, i / 960, (samples - i - 1) / 960);
-				const segmentLevel = i < primeSamples ? level : holdLevel;
-				const sample = Math.sin(2 * Math.PI * frequency * t) * segmentLevel * fade;
-				left[i] = sample;
-				right[i] = sample;
-			}
-
-			const source = audio.createBufferSource();
-			source.buffer = buffer;
-			source.connect(state.masterGain);
-			retainAudioNode(source);
-			source.start(audio.currentTime + 0.005);
-			log("audio graph prime");
 		}
 
 		function startSilentAudioHold(label = "audio silent hold") {
@@ -915,10 +963,7 @@
 			const left = buffer.getChannelData(0);
 			const right = buffer.getChannelData(1);
 			for (let i = 0; i < samples; i++) {
-				const t = i / sampleRate;
-				const carrier = Math.sin(2 * Math.PI * 191 * t) * 0.00008;
-				const dither = (((i * 48271) % 2147483647) / 2147483647 - 0.5) * 0.00004;
-				const sample = carrier + dither;
+				const sample = nearSilentSample(i, sampleRate, AUDIO_KEEPALIVE_GAIN);
 				left[i] = sample;
 				right[i] = sample;
 			}
@@ -957,68 +1002,6 @@
 		function stopStartupAudioHold() {
 			stopSilentAudioHold();
 			stopSilentMediaHold();
-		}
-
-		async function testAudio() {
-			const audio = ensureAudioContext();
-			playUnlockTone({ direct: true, duration: 0.9, frequency: 880, level: 0.45 });
-			await audio.resume();
-			playGraphPrimeBuffer({ duration: 0.9, primeMs: 900, frequency: 1000, level: 0.2, holdLevel: 0.2 });
-			state.audioTimingLabel = "manual test";
-			state.lastAudioSchedule = `web audio test ${audio.state}`;
-			updateStatus();
-		}
-
-		function mediaToneUrl() {
-			if (mediaToneUrl.cached)
-				return mediaToneUrl.cached;
-
-			const sampleRate = 48000;
-			const durationSeconds = 1.0;
-			const samples = Math.round(sampleRate * durationSeconds);
-			const dataBytes = samples * 2;
-			const buffer = new ArrayBuffer(44 + dataBytes);
-			const view = new DataView(buffer);
-			let offset = 0;
-			function str(value) {
-				for (let i = 0; i < value.length; i++)
-					view.setUint8(offset++, value.charCodeAt(i));
-			}
-			function u32(value) {
-				view.setUint32(offset, value, true);
-				offset += 4;
-			}
-			function u16(value) {
-				view.setUint16(offset, value, true);
-				offset += 2;
-			}
-
-			str("RIFF");
-			u32(36 + dataBytes);
-			str("WAVEfmt ");
-			u32(16);
-			u16(1);
-			u16(1);
-			u32(sampleRate);
-			u32(sampleRate * 2);
-			u16(2);
-			u16(16);
-			str("data");
-			u32(dataBytes);
-			for (let i = 0; i < samples; i++) {
-				const t = i / sampleRate;
-				const fade = Math.min(1, i / 960, (samples - i - 1) / 960);
-				const sample = Math.max(-1, Math.min(1, Math.sin(2 * Math.PI * 660 * t) * 0.6 * fade));
-				view.setInt16(offset, Math.round(sample * 32767), true);
-				offset += 2;
-			}
-
-			let binary = "";
-			const bytes = new Uint8Array(buffer);
-			for (let i = 0; i < bytes.length; i++)
-				binary += String.fromCharCode(bytes[i]);
-			mediaToneUrl.cached = `data:audio/wav;base64,${btoa(binary)}`;
-			return mediaToneUrl.cached;
 		}
 
 		function silentMediaHoldUrl() {
@@ -1074,20 +1057,6 @@
 			return silentMediaHoldUrl.cached;
 		}
 
-		function ensureMediaElement() {
-			if (!state.testMediaElement) {
-				const audio = document.createElement("audio");
-				audio.preload = "auto";
-				audio.playsInline = true;
-				audio.src = mediaToneUrl();
-				audio.style.display = "none";
-				document.body.appendChild(audio);
-				state.testMediaElement = audio;
-			}
-
-			return state.testMediaElement;
-		}
-
 		function ensureMediaHoldElement() {
 			if (!state.mediaHoldElement) {
 				const audio = document.createElement("audio");
@@ -1101,34 +1070,6 @@
 			}
 
 			return state.mediaHoldElement;
-		}
-
-		function beginMediaUnlockTone(label = "media element test") {
-			const audio = ensureMediaElement();
-			audio.pause();
-			audio.currentTime = 0;
-			const playPromise = audio.play();
-			state.lastAudioSchedule = label;
-			log(label);
-			updateStatus();
-			return playPromise;
-		}
-
-		function keepMediaUnlockToneActive(label = "media unlock active") {
-			const audio = ensureMediaElement();
-			if (!audio.paused && !audio.ended) {
-				state.lastAudioSchedule = label;
-				log(label);
-				updateStatus();
-				return Promise.resolve();
-			}
-
-			audio.currentTime = 0;
-			const playPromise = audio.play();
-			state.lastAudioSchedule = label;
-			log(label);
-			updateStatus();
-			return playPromise;
 		}
 
 		function beginSilentMediaHold(label = "media silent hold") {
@@ -1159,12 +1100,6 @@
 			log("media silent hold ended");
 		}
 
-		async function testMediaAudio() {
-			await beginMediaUnlockTone("media audio test");
-			state.audioTimingLabel = "media test";
-			updateStatus();
-		}
-
 		function runStart() {
 			start().catch((error) => {
 				log(`start failed: ${error.message}`);
@@ -1175,6 +1110,7 @@
 				window.clearInterval(state.syncTimer);
 				state.schedulerTimer = 0;
 				state.syncTimer = 0;
+				stopContinuousAudioScheduler();
 				stopStartupAudioHold();
 				state.lastAudioSchedule = error.message || "start failed";
 				el.startBtn.textContent = "Start";
@@ -1185,25 +1121,76 @@
 			});
 		}
 
-		function runTestAudio() {
-			testAudio().catch((error) => {
-				log(`audio test failed: ${error.message}`);
-				state.lastAudioSchedule = error.message || "test failed";
-				updateStatus();
-			});
+		function setAudioProbe(label, className = "") {
+			state.audioProbeLabel = label;
+			state.audioProbeClass = className;
+			updateStatus();
 		}
 
-		function runTestMediaAudio() {
-			testMediaAudio().catch((error) => {
-				log(`media audio test failed: ${error.message}`);
-				state.lastAudioSchedule = error.message || "media test failed";
-				updateStatus();
-			});
+		async function probeBrowserAudio() {
+			if (!el.audioEnabled.checked) {
+				setAudioProbe("disabled", "warn");
+				return { playable: false, webAudio: false, media: false };
+			}
+
+			setAudioProbe("probing", "warn");
+			let webAudio = false;
+			let media = false;
+			let webAudioError = "";
+			let mediaError = "";
+
+			try {
+				const audio = ensureAudioContext();
+				state.masterGain.gain.value = Math.max(0, Math.min(1, readNumber(el.gain, 0.35)));
+				startSilentAudioHold("audio probe keepalive");
+				await audio.resume();
+				webAudio = audio.state === "running";
+				if (!webAudio)
+					webAudioError = audio.state || "not running";
+			}
+			catch (error) {
+				webAudioError = error.message || error.name || "blocked";
+			}
+
+			try {
+				await beginSilentMediaHold("media probe hold");
+				media = true;
+			}
+			catch (error) {
+				mediaError = error.message || error.name || "blocked";
+			}
+
+			if (webAudio) {
+				setAudioProbe(media ? "webaudio+media ok" : "webaudio ok", "ok");
+				log(`audio probe ok webaudio${media ? " media" : ""}`);
+				return { playable: true, webAudio, media };
+			}
+
+			stopStartupAudioHold();
+			const reason = webAudioError || mediaError || "blocked";
+			setAudioProbe(media ? "media only" : "blocked", media ? "warn" : "bad");
+			log(`audio probe ${media ? "media only" : "blocked"}: ${reason}`);
+			return { playable: false, webAudio, media };
+		}
+
+		async function autoStartWhenPlayable() {
+			if (state.autoStartAttempted || !state.autoStart || state.running || state.starting)
+				return;
+
+			state.autoStartAttempted = true;
+			const result = await probeBrowserAudio();
+			if (!result.playable || state.running || state.starting) {
+				log("auto start waiting for user gesture");
+				return;
+			}
+
+			log("auto start audio allowed");
+			await start();
 		}
 
 		function primeScheduledAudioOutput() {
-			state.lastAudioSchedule = "silent hold until first cue";
-			log("silent hold until first cue");
+			state.lastAudioSchedule = "browser audio keepalive";
+			log("browser audio keepalive");
 			updateStatus();
 		}
 
@@ -1238,24 +1225,22 @@
 		function scheduleAudioCue(targetMs, sequence) {
 			if (!el.audioEnabled.checked || !state.audioContext)
 				return false;
+			if (!state.audioSchedulerNode)
+				startContinuousAudioScheduler();
 
-			const schedule = audioScheduleForRemoteMs(targetMs - MARKER_MS * 0.5);
+			const schedule = audioScheduleForRemoteMs(targetMs - AUDIO_PREROLL_MS - MARKER_MS * 0.5);
 			const when = schedule.when;
-			if (when < state.audioContext.currentTime + 0.025)
+			if (when < state.audioContext.currentTime + 0.05)
 				return false;
 
-			const source = state.audioContext.createBufferSource();
-			const releaseStartupHold = !state.audioPrimedAfterCue;
-			source.buffer = makePacketBuffer(sequence);
-			source.connect(state.masterGain);
-			retainAudioNode(source);
-			source.addEventListener("ended", () => {
-				state.lastAudioSchedule = `ended seq=${sequence & 0xff}`;
-				if (releaseStartupHold)
-					stopStartupAudioHold();
-				updateStatus();
+			const buffer = makePacketBuffer(sequence);
+			state.audioCueQueue.push({
+				sequence,
+				startFrame: Math.round(when * buffer.sampleRate),
+				length: buffer.length,
+				left: buffer.getChannelData(0),
+				right: buffer.getChannelData(1),
 			});
-			source.start(when);
 			state.audioTimingLabel = schedule.mode;
 			state.lastAudioSchedule = `${schedule.mode} seq=${sequence & 0xff} in=${((when - state.audioContext.currentTime) * 1000).toFixed(1)} ms`;
 			log(`audio ${state.lastAudioSchedule}`);
@@ -1268,7 +1253,7 @@
 
 			const now = remoteNowMs();
 			const period = Math.max(1000, readNumber(el.periodMs, 3000));
-			const lead = Math.max(500, readNumber(el.leadMs, 2200));
+			const lead = Math.max(500, state.leadMs);
 			if (!state.nextTargetMs || state.nextTargetMs < now - period)
 				state.nextTargetMs = nextBoundary(now, lead, period);
 
@@ -1276,9 +1261,16 @@
 			while (state.nextTargetMs <= now + LOOKAHEAD_MS) {
 				if (!state.scheduled.has(state.nextTargetMs)) {
 					const sequence = sequenceForTarget(state.nextTargetMs);
-					state.scheduled.set(state.nextTargetMs, { targetMs: state.nextTargetMs, sequence });
-					scheduledAudio = scheduleAudioCue(state.nextTargetMs, sequence) || scheduledAudio;
-					log(`cue seq=${sequence & 0xff} target=${fmtTime(state.nextTargetMs)} utc_ms=${Math.round(state.nextTargetMs)}`);
+					const audioScheduled = scheduleAudioCue(state.nextTargetMs, sequence);
+					if (!el.audioEnabled.checked || audioScheduled) {
+						state.scheduled.set(state.nextTargetMs, { targetMs: state.nextTargetMs, sequence });
+						scheduledAudio = audioScheduled || scheduledAudio;
+						log(`cue seq=${sequence & 0xff} target=${fmtTime(state.nextTargetMs)} utc_ms=${Math.round(state.nextTargetMs)}`);
+					}
+					else {
+						state.lastAudioSchedule = `skipped late seq=${sequence & 0xff}`;
+						log(state.lastAudioSchedule);
+					}
 				}
 				state.lastScheduledTargetMs = state.nextTargetMs;
 				state.nextTargetMs += period;
@@ -1355,8 +1347,9 @@
 		}
 
 		function qrPayload(targetMs, sequence) {
-			const phaseMs = Math.max(1, Math.round(Math.max(80, readNumber(el.visualMs, 220)) * 0.5));
-			return `p=2,s=${Math.round(targetMs)},q=${phaseMs},i=${sequence & 0xff},m=1`;
+			const phaseMs = Math.max(1, Math.round(Math.max(80, state.visualMs) * 0.5));
+			const code = sequence & 0xff;
+			return `p=2,s=${code},n=${Math.round(targetMs)},q=${phaseMs},i=${code},m=1`;
 		}
 
 		function qrDataCodewords(payload) {
@@ -1631,6 +1624,11 @@
 			}
 		}
 
+		function drawNeutralFrame(ctx) {
+			ctx.fillStyle = VIDEO_NEUTRAL;
+			ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+		}
+
 		function markerSquare(w, h) {
 			const size = Math.min(w, h) * 0.88;
 			return {
@@ -1656,8 +1654,7 @@
 		}
 
 		function drawMarkerPhase(ctx, square, phaseIndex, dpr) {
-			ctx.fillStyle = "#7f7f7f";
-			ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+			drawNeutralFrame(ctx);
 
 			const radius = Math.max(18 * dpr, square.size * 0.085);
 			const points = referencePoints(square);
@@ -1668,6 +1665,82 @@
 				ctx.fillStyle = high ? "#f2f2f2" : "#202020";
 				ctx.fill();
 			}
+		}
+
+		function fmtSignedProgressMs(ms) {
+			const rounded = Math.round(ms);
+			if (rounded > 0)
+				return `+${rounded} ms`;
+			return `${rounded} ms`;
+		}
+
+		function drawSyncProgress(ctx, square, event, now, dpr) {
+			if (!event || !Number.isFinite(event.targetMs))
+				return;
+
+			const delta = now - event.targetMs;
+			if (Math.abs(delta) > PROGRESS_WINDOW_MS)
+				return;
+
+			const safeTop = square.y + square.size;
+			const bottomMargin = ctx.canvas.height - safeTop;
+			if (bottomMargin < 22 * dpr)
+				return;
+
+			const marginX = Math.max(18 * dpr, ctx.canvas.width * 0.08);
+			const x = Math.round(marginX);
+			const width = Math.max(1, Math.round(ctx.canvas.width - marginX * 2));
+			const centerX = x + width * 0.5;
+			const y = Math.round(safeTop + bottomMargin * 0.5);
+			const barHeight = Math.max(3 * dpr, Math.round(bottomMargin * 0.12));
+			const barY = Math.round(y - barHeight * 0.5);
+			const progress = Math.max(0, Math.min(1, (delta + PROGRESS_WINDOW_MS) / (PROGRESS_WINDOW_MS * 2)));
+			const indicatorX = x + width * progress;
+			const tickHeight = Math.max(8 * dpr, barHeight * 2.3);
+
+			ctx.save();
+			ctx.fillStyle = "rgba(20, 24, 29, 0.78)";
+			ctx.fillRect(x, barY, width, barHeight);
+			ctx.fillStyle = "#5fb7ff";
+			ctx.fillRect(x, barY, Math.max(0, indicatorX - x), barHeight);
+
+			ctx.strokeStyle = "rgba(20, 24, 29, 0.48)";
+			ctx.lineWidth = Math.max(1, dpr);
+			for (let i = -3; i <= 3; i++) {
+				const tickX = centerX + width * 0.5 * (i / 4);
+				ctx.beginPath();
+				ctx.moveTo(tickX, y - tickHeight * 0.45);
+				ctx.lineTo(tickX, y + tickHeight * 0.45);
+				ctx.stroke();
+			}
+
+			ctx.strokeStyle = "#07110d";
+			ctx.lineWidth = Math.max(1, 1.4 * dpr);
+			ctx.beginPath();
+			ctx.moveTo(indicatorX, y - tickHeight * 0.55);
+			ctx.lineTo(indicatorX, y + tickHeight * 0.55);
+			ctx.stroke();
+
+			ctx.strokeStyle = "#edf2f5";
+			ctx.lineWidth = Math.max(2, 2 * dpr);
+			ctx.beginPath();
+			ctx.moveTo(centerX, y - tickHeight * 0.7);
+			ctx.lineTo(centerX, y + tickHeight * 0.7);
+			ctx.stroke();
+
+			if (bottomMargin >= 28 * dpr) {
+				const fontSize = Math.max(9 * dpr, Math.min(12 * dpr, bottomMargin * 0.24));
+				ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+				ctx.textAlign = "center";
+				ctx.textBaseline = "middle";
+				ctx.fillStyle = "#edf2f5";
+				ctx.fillText(fmtSignedProgressMs(delta), indicatorX, y - Math.min(11 * dpr, bottomMargin * 0.3));
+				ctx.fillStyle = "rgba(237, 242, 245, 0.86)";
+				ctx.fillText("-1s", x, y + Math.min(11 * dpr, bottomMargin * 0.3));
+				ctx.fillText("0", centerX, y + Math.min(11 * dpr, bottomMargin * 0.3));
+				ctx.fillText("+1s", x + width, y + Math.min(11 * dpr, bottomMargin * 0.3));
+			}
+			ctx.restore();
 		}
 
 		function nearestEvent(now) {
@@ -1699,57 +1772,28 @@
 			const now = remoteNowMs();
 			state.lastFrameMs = now;
 			const period = Math.max(1000, readNumber(el.periodMs, 3000));
-			const visualMs = Math.max(80, readNumber(el.visualMs, 220));
+			const visualMs = Math.max(80, state.visualMs);
 			const event = nearestEvent(now);
 			const delta = event ? now - event.targetMs : Infinity;
 			const phaseMs = visualMs * 0.5;
 			const active = Math.abs(delta) <= phaseMs;
-			const qrVisible = el.showData.checked && event && delta < -phaseMs && delta >= -QR_DISPLAY_LEAD_MS;
+			const qrVisible = event && delta < -phaseMs && delta >= -QR_DISPLAY_LEAD_MS;
 
-			ctx.fillStyle = "#171c21";
-			ctx.fillRect(0, 0, w, h);
-
-			const centerX = w * 0.5;
-			const centerY = h * 0.5;
-			const next = event || { targetMs: nextBoundary(now, readNumber(el.leadMs, 2200), period), sequence: 0 };
+			const next = event || { targetMs: nextBoundary(now, state.leadMs, period), sequence: 0 };
 			const square = markerSquare(w, h);
 
 			if (active) {
 				drawMarkerPhase(ctx, square, delta < 0 ? 0 : 1, dpr);
 			}
 			else if (qrVisible) {
-				ctx.fillStyle = "#7f7f7f";
-				ctx.fillRect(0, 0, w, h);
+				drawNeutralFrame(ctx);
 				drawQr(ctx, square, event.targetMs, event.sequence);
 			}
 			else {
-				ctx.strokeStyle = "#2d3841";
-				ctx.lineWidth = Math.max(2, 3 * dpr);
-				ctx.beginPath();
-				ctx.moveTo(centerX, h * 0.14);
-				ctx.lineTo(centerX, h * 0.86);
-				ctx.stroke();
-
-				ctx.textAlign = "center";
-				ctx.textBaseline = "middle";
-				ctx.fillStyle = "#edf2f5";
-				ctx.font = `${Math.max(28, Math.min(w, h) * 0.058)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-				ctx.fillText("ARMED", centerX, centerY - h * 0.065);
-
-				ctx.font = `${Math.max(14, Math.min(w, h) * 0.026)}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-				ctx.fillStyle = "#93a0aa";
-				ctx.fillText(`SEQ ${(next.sequence & 0xff).toString().padStart(3, "0")}  UTC ${Math.round(next.targetMs)}`, centerX, centerY + h * 0.02);
-				ctx.fillText(fmtTime(next.targetMs), centerX, centerY + h * 0.07);
+				drawNeutralFrame(ctx);
 			}
 
-			if (!active && !qrVisible) {
-				const progress = ((now % period) + period) % period / period;
-				ctx.fillStyle = "#2a333c";
-				ctx.fillRect(w * 0.08, h - 18 * dpr, w * 0.84, 5 * dpr);
-				ctx.fillStyle = "#5fb7ff";
-				ctx.fillRect(w * 0.08, h - 18 * dpr, w * 0.84 * progress, 5 * dpr);
-			}
-
+			drawSyncProgress(ctx, square, event, now, dpr);
 			updateBadges(next, now);
 			requestAnimationFrame(drawStage);
 		}
@@ -1766,6 +1810,8 @@
 			el.clockSource.className = state.clockLabel === "local" ? "warn" : "ok";
 			el.clockOffset.textContent = fmtMs(state.offsetMs);
 			el.clockRtt.textContent = state.lastRttMs ? fmtMs(state.lastRttMs, 2) : "-";
+			el.audioProbe.textContent = state.audioProbeLabel;
+			el.audioProbe.className = state.audioProbeClass;
 			el.schedulerStatus.textContent = state.starting ? "starting" : state.running ? "running" : "stopped";
 			el.schedulerStatus.className = state.running ? "ok" : state.starting ? "warn" : "";
 			if (state.wakeLock) {
@@ -1823,7 +1869,7 @@
 			if (token !== state.runToken || !state.starting)
 				return;
 
-			if (el.autoSync.checked && el.timeEndpoint.value.trim()) {
+			if (state.autoSync && useRemoteTime()) {
 				try {
 					await syncClock();
 				}
@@ -1840,14 +1886,17 @@
 			state.lastScheduledTargetMs = 0;
 			state.audioPrimedAfterCue = false;
 			state.audioTimingLabel = "-";
+			state.runOffsetMs = state.offsetMs;
 			state.scheduled.clear();
+			if (el.audioEnabled.checked)
+				startContinuousAudioScheduler();
 			updateStatus();
 			updateRunClass();
 			updateFullscreenClass();
 			scheduleDueEvents();
 			state.schedulerTimer = window.setInterval(scheduleDueEvents, SCHEDULER_TICK_MS);
 			state.syncTimer = window.setInterval(() => {
-				if (state.running && el.autoSync.checked && el.timeEndpoint.value.trim()) {
+				if (state.running && state.autoSync && useRemoteTime()) {
 					syncClock().catch((error) => log(`sync failed: ${error.message}`));
 				}
 			}, 15000);
@@ -1865,6 +1914,7 @@
 			state.audioTimingLabel = "-";
 			state.lastAudioSchedule = "-";
 			state.scheduled.clear();
+			stopContinuousAudioScheduler();
 			stopStartupAudioHold();
 			el.startBtn.textContent = "Start";
 			el.startBtn.classList.add("primary");
@@ -1887,34 +1937,43 @@
 			const map = {
 				endpoint: el.timeEndpoint,
 				period: el.periodMs,
-				lead: el.leadMs,
-				visual: el.visualMs,
 				gain: el.gain,
 			};
 			for (const [key, input] of Object.entries(map)) {
 				if (params.has(key))
 					input.value = params.get(key);
 			}
+			if (params.get("time") === "local" || params.get("remote") === "0")
+				el.remoteTime.checked = false;
+			if (params.get("time") === "remote" || params.get("remote") === "1")
+				el.remoteTime.checked = true;
+			if (params.has("endpoint") && !params.get("endpoint"))
+				el.remoteTime.checked = false;
+			if (params.has("lead")) {
+				const lead = Number(params.get("lead"));
+				if (Number.isFinite(lead))
+					state.leadMs = Math.max(500, lead);
+			}
+			if (params.has("visual")) {
+				const visual = Number(params.get("visual"));
+				if (Number.isFinite(visual))
+					state.visualMs = Math.max(80, visual);
+			}
 			if (params.get("audio") === "0")
 				el.audioEnabled.checked = false;
 			if (params.get("autosync") === "0")
-				el.autoSync.checked = false;
+				state.autoSync = false;
+			if (params.get("autostart") === "0")
+				state.autoStart = false;
+			if (params.get("autostart") === "1")
+				state.autoStart = true;
+			updateTimeSourceControls();
 		}
 
 		el.startBtn.addEventListener("click", runStart);
 		el.startBtn.addEventListener("touchend", (event) => {
 			event.preventDefault();
 			runStart();
-		}, { passive: false });
-		el.testAudioBtn.addEventListener("click", runTestAudio);
-		el.testAudioBtn.addEventListener("touchend", (event) => {
-			event.preventDefault();
-			runTestAudio();
-		}, { passive: false });
-		el.testMediaBtn.addEventListener("click", runTestMediaAudio);
-		el.testMediaBtn.addEventListener("touchend", (event) => {
-			event.preventDefault();
-			runTestMediaAudio();
 		}, { passive: false });
 		el.fullscreenBtn.addEventListener("click", async () => {
 			try {
@@ -1924,12 +1983,20 @@
 				log(`fullscreen failed: ${error.message}`);
 			}
 		});
-		el.lockBtn.addEventListener("click", requestWakeLock);
-		el.syncBtn.addEventListener("click", () => {
-			syncClock().catch((error) => {
-				log(`sync failed: ${error.message}`);
-				updateStatus();
-			});
+		el.remoteTime.addEventListener("change", () => {
+			updateTimeSourceControls();
+			if (!state.running)
+				return;
+			if (!useRemoteTime()) {
+				resetRunClockSource();
+				return;
+			}
+			syncClock()
+				.then(resetRunClockSource)
+				.catch((error) => log(`sync failed: ${error.message}`));
+		});
+		el.timeEndpoint.addEventListener("input", () => {
+			updateTimeSourceControls();
 		});
 		el.gain.addEventListener("input", () => {
 			if (state.masterGain)
@@ -1952,6 +2019,12 @@
 
 		loadQuery();
 		updateStatus();
+		window.setTimeout(() => {
+			autoStartWhenPlayable().catch((error) => {
+				setAudioProbe("blocked", "bad");
+				log(`auto start failed: ${error.message}`);
+			});
+		}, 250);
 		requestAnimationFrame(drawStage);
 	})();
 	</script>
