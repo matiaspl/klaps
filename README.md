@@ -15,6 +15,7 @@ through real displays, speakers, cameras, microphones, OBS media and browser sou
 recordings. The most important improvements over the original design are:
 - lower-flash video markers,
 - extended QR Code vocabulary allowing glass-to-glass latency  measurements,
+- new visual markers for naked-eye AV offset assessment (web generator-only),
 - cleaner event timing,
 - sample-centered chirp/tick audio detection designed for echo and reverberation tolerance,
 - DTMF/CRC event identity,
