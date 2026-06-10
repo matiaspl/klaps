@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.12)
 
-project(obs-audio-video-sync-dock VERSION 0.1.4)
+project(obs-audio-video-sync-dock VERSION 2.0.0)
 
 set(PLUGIN_AUTHOR "Norihiro Kamae")
 
@@ -109,7 +109,7 @@ if(APPLE)
 	set_target_properties(${PROJECT_NAME} PROPERTIES PREFIX "")
 	set(MACOSX_PLUGIN_GUI_IDENTIFIER "${MACOS_BUNDLEID}")
 	set(MACOSX_PLUGIN_BUNDLE_VERSION "${PROJECT_VERSION}")
-	set(MACOSX_PLUGIN_SHORT_VERSION_STRING "1")
+	set(MACOSX_PLUGIN_SHORT_VERSION_STRING "${PROJECT_VERSION}")
 
 	if(ENABLE_COVERAGE)
 		target_compile_options(${PROJECT_NAME} PRIVATE -coverage)
