@@ -3,6 +3,7 @@
 ## Introduction
 
 This is an OBS Studio plugin to measure the audio offset and video latency. 
+
 It's based on solid grounds of Norihiro's [Audio Video Sync Dock](https://obsproject.com/forum/resources/audio-video-sync-dock.2028/)
 
 ## Motivation behind the fork
