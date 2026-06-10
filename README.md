@@ -30,8 +30,7 @@ Version 2 separates timing from identity: sparse checkerboard transitions define
 the video instant, a matched-filter chirp/tick defines the audio fiducial, and
 the later DTMF/CRC payload only pairs the correct events. It is less visually
 intrusive and easier to capture, while still measuring relative AV offset rather
-than true source-to-capture latency; use the web generator workflow when you
-need glass-to-glass latency.
+than true source-to-capture latency.
 
 ## How to use
 
