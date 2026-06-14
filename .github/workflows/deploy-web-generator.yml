@@ -4,6 +4,7 @@ on:
   push:
     branches: [ main ]
     paths:
+      - 'docs/synced-cue-generator.html'
       - 'docs/ntp-cue-generator.html'
       - '.github/workflows/deploy-web-generator.yml'
   workflow_dispatch:
@@ -50,7 +51,8 @@ jobs:
         do
           curl -fsSL "$base_url/$file" -o "_site/$file"
         done
-        cp docs/ntp-cue-generator.html _site/index.html
+        cp docs/synced-cue-generator.html _site/index.html
+        cp docs/synced-cue-generator.html _site/synced-cue-generator.html
         cp docs/ntp-cue-generator.html _site/ntp-cue-generator.html
         touch _site/.nojekyll
 
