@@ -1,0 +1,2283 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+	<meta name="theme-color" content="#101317">
+	<link rel="icon" href="data:,">
+	<title>AVS Cue Generator (synced)</title>
+	<style>
+		:root {
+			color-scheme: dark;
+			--bg: #101317;
+			--panel: #191d23;
+			--panel2: #20262d;
+			--text: #edf2f5;
+			--muted: #93a0aa;
+			--line: #323a44;
+			--green: #35d18a;
+			--blue: #5fb7ff;
+			--amber: #f0b85c;
+			--red: #ff6868;
+		}
+
+		* {
+			box-sizing: border-box;
+		}
+
+		html,
+		body {
+			height: 100%;
+			margin: 0;
+			background: var(--bg);
+			color: var(--text);
+			font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+			letter-spacing: 0;
+			overflow: hidden;
+		}
+
+		body {
+			display: grid;
+			grid-template-columns: minmax(0, 1fr) 360px;
+		}
+
+		.stage {
+			position: relative;
+			min-width: 0;
+			background: #14181d;
+		}
+
+		canvas {
+			width: 100%;
+			height: 100%;
+			display: block;
+			touch-action: none;
+		}
+
+		.overlay {
+			position: absolute;
+			left: 16px;
+			right: 16px;
+			bottom: 16px;
+			display: grid;
+			grid-template-columns: repeat(4, minmax(0, 1fr));
+			gap: 8px;
+			pointer-events: none;
+		}
+
+		.badge {
+			background: rgb(10 13 16 / 0.72);
+			border: 1px solid rgb(255 255 255 / 0.12);
+			border-radius: 8px;
+			padding: 8px 10px;
+			min-width: 0;
+		}
+
+		.badge div:first-child,
+		.field label {
+			color: var(--muted);
+			font-size: 11px;
+			line-height: 1.2;
+			text-transform: uppercase;
+		}
+
+		.badge div:last-child {
+			color: var(--text);
+			font-size: 18px;
+			line-height: 1.25;
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+		}
+
+		.panel {
+			min-width: 0;
+			background: var(--panel);
+			border-left: 1px solid var(--line);
+			padding: 16px;
+			overflow: auto;
+		}
+
+		h1 {
+			font-size: 18px;
+			line-height: 1.2;
+			margin: 0 0 4px;
+			font-weight: 700;
+		}
+
+		.tagline {
+			color: var(--muted);
+			font-size: 12px;
+			margin: 0 0 16px;
+			line-height: 1.4;
+		}
+
+		.group {
+			border-top: 1px solid var(--line);
+			padding-top: 14px;
+			margin-top: 14px;
+			display: grid;
+			gap: 10px;
+		}
+
+		.row {
+			display: grid;
+			grid-template-columns: 1fr 1fr;
+			gap: 8px;
+		}
+
+		.field {
+			display: grid;
+			gap: 5px;
+			min-width: 0;
+		}
+
+		input,
+		select,
+		button {
+			font: inherit;
+		}
+
+		input,
+		select {
+			width: 100%;
+			color: var(--text);
+			background: var(--panel2);
+			border: 1px solid var(--line);
+			border-radius: 6px;
+			padding: 8px 9px;
+			min-height: 38px;
+		}
+
+		input[type="checkbox"] {
+			width: 18px;
+			min-height: 18px;
+			accent-color: var(--green);
+		}
+
+		button {
+			min-height: 40px;
+			border: 1px solid var(--line);
+			border-radius: 6px;
+			color: var(--text);
+			background: var(--panel2);
+			padding: 8px 10px;
+			cursor: pointer;
+			-webkit-touch-callout: none;
+			-webkit-user-select: none;
+			user-select: none;
+		}
+
+		button.primary {
+			color: #07110d;
+			background: var(--green);
+			border-color: var(--green);
+			font-weight: 700;
+		}
+
+		button:disabled {
+			opacity: 0.52;
+			cursor: default;
+		}
+
+		.trim {
+			display: grid;
+			grid-template-columns: 44px 1fr 44px;
+			gap: 8px;
+			align-items: center;
+		}
+
+		.trim button {
+			min-height: 38px;
+			font-size: 18px;
+			font-weight: 700;
+		}
+
+		.trim input {
+			text-align: center;
+			font-variant-numeric: tabular-nums;
+		}
+
+		.hint {
+			color: var(--muted);
+			font-size: 12px;
+			line-height: 1.45;
+		}
+
+		.toggle {
+			display: grid;
+			grid-template-columns: 20px 1fr;
+			align-items: center;
+			gap: 8px;
+			color: var(--text);
+			font-size: 14px;
+		}
+
+		.status {
+			display: grid;
+			gap: 7px;
+			font-size: 13px;
+			color: var(--muted);
+		}
+
+		.status-line {
+			display: flex;
+			align-items: baseline;
+			justify-content: space-between;
+			gap: 10px;
+			border-bottom: 1px solid rgb(255 255 255 / 0.06);
+			padding-bottom: 6px;
+		}
+
+		.status-line span:last-child {
+			color: var(--text);
+			text-align: right;
+			font-variant-numeric: tabular-nums;
+		}
+
+		.ok {
+			color: var(--green) !important;
+		}
+
+		.warn {
+			color: var(--amber) !important;
+		}
+
+		.bad {
+			color: var(--red) !important;
+		}
+
+		.log {
+			height: 150px;
+			overflow: auto;
+			border: 1px solid var(--line);
+			background: #11151a;
+			border-radius: 6px;
+			padding: 8px;
+			font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+			color: #c8d2da;
+			white-space: pre;
+		}
+
+		@media (max-width: 860px) {
+			body {
+				grid-template-columns: 1fr;
+				grid-template-rows: minmax(0, 1fr) auto;
+			}
+
+			.panel {
+				border-left: 0;
+				border-top: 1px solid var(--line);
+				max-height: 46vh;
+			}
+
+			.overlay {
+				display: none;
+			}
+		}
+
+		body.generator-running .overlay,
+		body.fullscreen-running .panel {
+			display: none;
+		}
+
+		body.fullscreen-running .overlay {
+			display: none;
+		}
+
+		body.fullscreen-running {
+			display: block;
+			width: 100vw;
+			height: 100vh;
+		}
+
+		body.fullscreen-running .stage {
+			width: 100vw;
+			height: 100vh;
+			min-height: 100vh;
+		}
+
+		.stage:fullscreen,
+		.stage:-webkit-full-screen {
+			width: 100vw;
+			height: 100vh;
+		}
+	</style>
+</head>
+<body>
+	<main class="stage">
+		<canvas id="stage"></canvas>
+		<div class="overlay">
+			<div class="badge"><div>Clock</div><div id="clockBadge">local</div></div>
+			<div class="badge"><div>Next Cue</div><div id="nextBadge">-</div></div>
+			<div class="badge"><div>A/V Anchor</div><div id="anchorBadge">-</div></div>
+			<div class="badge"><div>Wake</div><div id="wakeBadge">idle</div></div>
+		</div>
+	</main>
+
+	<aside class="panel">
+		<h1>AVS Cue Generator</h1>
+		<p class="tagline">Single-clock build: audio is master, video follows the same instant. One display-trim per device — no per-cue latency guessing.</p>
+
+		<div class="row">
+			<button id="startBtn" class="primary">Start</button>
+			<button id="fullscreenBtn">Fullscreen</button>
+		</div>
+
+		<div class="group">
+			<label class="toggle"><input id="remoteTime" type="checkbox" checked> Remote time (absolute glass-to-glass)</label>
+			<div class="field">
+				<label for="timeEndpoint">Time endpoint</label>
+				<input id="timeEndpoint" value="time.php" placeholder="blank uses this device clock">
+			</div>
+		</div>
+
+		<div class="group">
+			<div class="row">
+				<div class="field">
+					<label for="periodMs">Period ms</label>
+					<input id="periodMs" type="number" min="1000" step="100" value="3000">
+				</div>
+				<div class="field">
+					<label for="gain">Audio gain</label>
+					<input id="gain" type="number" min="0" max="1" step="0.05" value="0.35">
+				</div>
+			</div>
+			<label class="toggle"><input id="audioEnabled" type="checkbox" checked> Audio cues</label>
+		</div>
+
+		<div class="group">
+			<div class="field">
+				<label for="videoTrim">Display trim — video lead ms</label>
+				<div class="trim">
+					<button id="trimDown" type="button" title="Flip video earlier">−</button>
+					<input id="videoTrim" type="number" step="1" value="0">
+					<button id="trimUp" type="button" title="Flip video later">+</button>
+				</div>
+			</div>
+			<p class="hint">Audio output latency is measured and compensated automatically. Set this once per device so the measured A/V offset reads ~0: raise it if video lands late, lower it if early. Saved on this device.</p>
+		</div>
+
+		<div class="group status">
+			<div class="status-line"><span>Clock source</span><span id="clockSource">local</span></div>
+			<div class="status-line"><span>Offset</span><span id="clockOffset">0.000 ms</span></div>
+			<div class="status-line"><span>RTT</span><span id="clockRtt">-</span></div>
+			<div class="status-line"><span>Audio probe</span><span id="audioProbe">pending</span></div>
+			<div class="status-line"><span>Audio anchor</span><span id="audioAnchor">-</span></div>
+			<div class="status-line"><span>Audio latency</span><span id="audioLatency">-</span></div>
+			<div class="status-line"><span>Audio state</span><span id="audioState">-</span></div>
+			<div class="status-line"><span>Scheduler</span><span id="schedulerStatus">stopped</span></div>
+			<div class="status-line"><span>Screen lock</span><span id="wakeStatus">idle</span></div>
+		</div>
+
+		<div class="group">
+			<div class="log" id="eventLog"></div>
+		</div>
+	</aside>
+
+	<script>
+	(() => {
+		"use strict";
+
+		/*
+		 * Protocol-critical constants and synthesis (marker, QR, packet layout,
+		 * fiducial geometry) are identical to ntp-cue-generator.html so the OBS
+		 * analyzer in sync-test-output.cpp decodes this generator unchanged.
+		 *
+		 * What is new here is the timing core: instead of estimating audio output
+		 * latency per cue (and branching per platform), we keep ONE smoothed scalar
+		 * `audioAnchor` that maps the performance clock to the AudioContext clock at
+		 * the speaker. Audio is the master; video flips at the same wall instant and
+		 * is corrected by a single per-device display trim. Relative A/V offset is
+		 * therefore stable and identical across desktop and mobile browsers.
+		 */
+		const DTMF_ROWS = [697, 770, 852, 941];
+		const DTMF_COLS = [1209, 1336, 1477];
+		const MARKER_MS = 80;
+		const MARKER_F0 = 500;
+		const MARKER_F1 = 2500;
+		const MARKER_TICK_MS = 6;
+		const MARKER_CHIRP_GAIN = 0.72;
+		const MARKER_TICK_GAIN = 0.28;
+		const AUDIO_PREROLL_MS = 180;
+		const AUDIO_PREROLL_GAIN = 0.012;
+		const AUDIO_KEEPALIVE_GAIN = 0.006;
+		const SYMBOL_MS = 70;
+		const GUARD_MS = 60;
+		const PAYLOAD_SYMBOLS = 5;
+		const PAYLOAD_BASE = DTMF_ROWS.length * DTMF_COLS.length;
+		const LOOKAHEAD_MS = 3200;
+		const SCHEDULER_TICK_MS = 60;
+		const ANCHOR_TICK_MS = 250;
+		const ANCHOR_WINDOW = 31;
+		const QR_VERSION = 3;
+		const QR_SIZE = 17 + QR_VERSION * 4;
+		const QR_DATA_CODEWORDS = 44;
+		const QR_ECC_CODEWORDS = 26;
+		const QR_DISPLAY_LEAD_MS = 700;
+		const AUDIO_SCOPE_WINDOW_MS = 1000;
+		const GITHUB_PAGES_TIME_ENDPOINT = "https://broadcast-ready.com/obs-audio-video-sync-dock/time.php";
+		const VIDEO_NEUTRAL = "#7f7f7f";
+		const TRIM_STORAGE_KEY = "avs.synced.videoTrimMs";
+
+		const el = {
+			canvas: document.getElementById("stage"),
+			startBtn: document.getElementById("startBtn"),
+			fullscreenBtn: document.getElementById("fullscreenBtn"),
+			remoteTime: document.getElementById("remoteTime"),
+			timeEndpoint: document.getElementById("timeEndpoint"),
+			periodMs: document.getElementById("periodMs"),
+			gain: document.getElementById("gain"),
+			audioEnabled: document.getElementById("audioEnabled"),
+			videoTrim: document.getElementById("videoTrim"),
+			trimDown: document.getElementById("trimDown"),
+			trimUp: document.getElementById("trimUp"),
+			clockBadge: document.getElementById("clockBadge"),
+			nextBadge: document.getElementById("nextBadge"),
+			anchorBadge: document.getElementById("anchorBadge"),
+			wakeBadge: document.getElementById("wakeBadge"),
+			clockSource: document.getElementById("clockSource"),
+			clockOffset: document.getElementById("clockOffset"),
+			clockRtt: document.getElementById("clockRtt"),
+			audioProbe: document.getElementById("audioProbe"),
+			audioAnchor: document.getElementById("audioAnchor"),
+			audioLatency: document.getElementById("audioLatency"),
+			audioState: document.getElementById("audioState"),
+			schedulerStatus: document.getElementById("schedulerStatus"),
+			wakeStatus: document.getElementById("wakeStatus"),
+			eventLog: document.getElementById("eventLog"),
+		};
+
+		const state = {
+			running: false,
+			starting: false,
+			runToken: 0,
+			audioContext: null,
+			masterGain: null,
+			wakeLock: null,
+			keepAliveCanvas: null,
+			keepAliveVideo: null,
+			keepAliveStream: null,
+			schedulerTimer: 0,
+			syncTimer: 0,
+			anchorTimer: 0,
+			nextTargetMs: 0,
+			lastScheduledTargetMs: 0,
+			scheduled: new Map(),
+			activeAudioNodes: new Set(),
+			mediaHoldElement: null,
+			audioHoldSource: null,
+			recentEvents: [],
+			offsetMs: 0,
+			runOffsetMs: 0,
+			offsetSamples: [],
+			qrCache: new Map(),
+			clockLabel: "local",
+			lastRttMs: 0,
+			lastFrameMs: 0,
+			lastBadgeUpdateMs: 0,
+			lastStatusUpdateMs: 0,
+			/* Timing core: one smoothed performance->context anchor at the speaker. */
+			audioAnchor: 0,
+			anchorSamples: [],
+			anchorValid: false,
+			anchorSource: "-",
+			audioLatencySamples: [],
+			displayAudioLatencySeconds: 0,
+			audioTimingLabel: "-",
+			lastAudioSchedule: "-",
+			audioProbeLabel: "pending",
+			audioProbeClass: "warn",
+			autoSync: true,
+			autoStart: true,
+			autoStartAttempted: false,
+			scopeMode: "auto",
+			leadMs: 2200,
+			visualMs: 220,
+			videoTrimMs: 0,
+		};
+
+		function localEpochMs() {
+			return performance.timeOrigin + performance.now();
+		}
+
+		function remoteNowMs() {
+			return localEpochMs() + (state.running ? state.runOffsetMs : state.offsetMs);
+		}
+
+		function remoteMsToPerfMs(remoteMs) {
+			return remoteMs - performance.timeOrigin - (state.running ? state.runOffsetMs : state.offsetMs);
+		}
+
+		function fmtMs(ms, digits = 3) {
+			if (!Number.isFinite(ms))
+				return "-";
+			return `${ms.toFixed(digits)} ms`;
+		}
+
+		function fmtTime(epochMs) {
+			if (!Number.isFinite(epochMs))
+				return "-";
+			const d = new Date(epochMs);
+			const base = d.toISOString().replace("T", " ").replace("Z", "");
+			return base;
+		}
+
+		function readNumber(input, fallback) {
+			const value = Number(input.value);
+			return Number.isFinite(value) ? value : fallback;
+		}
+
+		function isMobileRuntime() {
+			return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+				window.matchMedia("(pointer: coarse) and (max-width: 860px)").matches;
+		}
+
+		function canvasDpr() {
+			const dpr = Math.max(1, window.devicePixelRatio || 1);
+			return Math.min(isMobileRuntime() ? 1.75 : 3, dpr);
+		}
+
+		function shouldDrawSyncProgress() {
+			if (state.scopeMode === "on")
+				return true;
+			if (state.scopeMode === "off")
+				return false;
+			return !isMobileRuntime();
+		}
+
+		function crc8(value) {
+			let crc = value & 0xff;
+			for (let bit = 0; bit < 8; bit++) {
+				if (crc & 0x80)
+					crc = ((crc << 1) ^ 0x07) & 0xff;
+				else
+					crc = (crc << 1) & 0xff;
+			}
+			return crc;
+		}
+
+		function sequenceForTarget(targetMs) {
+			return Math.floor(targetMs / Math.max(1, readNumber(el.periodMs, 3000))) >>> 0;
+		}
+
+		function nextBoundary(nowMs, leadMs, periodMs) {
+			return Math.ceil((nowMs + leadMs) / periodMs) * periodMs;
+		}
+
+		function parseServerTime(text, response) {
+			const headerDate = response.headers.get("date");
+			const contentType = response.headers.get("content-type") || "";
+
+			if (contentType.includes("application/json") && text) {
+				try {
+					const data = JSON.parse(text);
+					const receiveMs = Number(data.server_receive_ms);
+					const sendMs = Number(data.server_send_ms);
+					if (Number.isFinite(receiveMs) && Number.isFinite(sendMs) && receiveMs > 1000000000000 &&
+					    sendMs > 1000000000000) {
+						return { serverMs: (receiveMs + sendMs) * 0.5, precision: "json-ntp" };
+					}
+					const candidates = [
+						data.server_midpoint_ms,
+						data.unix_ms,
+						data.unixMillis,
+						data.unixMilliseconds,
+						data.epoch_ms,
+						data.epochMillis,
+						data.now_ms,
+						data.nowMillis,
+						data.time_ms,
+						data.timestamp_ms,
+					];
+					for (const candidate of candidates) {
+						const value = Number(candidate);
+						if (Number.isFinite(value) && value > 1000000000000)
+							return { serverMs: value, precision: "json-ms" };
+					}
+					const secondsCandidates = [data.unixtime, data.unix, data.epoch, data.timestamp];
+					for (const candidate of secondsCandidates) {
+						const value = Number(candidate);
+						if (Number.isFinite(value) && value > 1000000000)
+							return { serverMs: value * 1000, precision: "json-s" };
+					}
+					for (const key of ["datetime", "utc_datetime", "iso", "time"]) {
+						if (typeof data[key] === "string") {
+							const parsed = Date.parse(data[key]);
+							if (Number.isFinite(parsed))
+								return { serverMs: parsed, precision: "json-iso" };
+						}
+					}
+				}
+				catch {
+					/* Fall back to text/header parsing. */
+				}
+			}
+
+			if (text) {
+				const trimmed = text.trim();
+				const number = Number(trimmed);
+				if (Number.isFinite(number)) {
+					if (number > 1000000000000)
+						return { serverMs: number, precision: "text-ms" };
+					if (number > 1000000000)
+						return { serverMs: number * 1000, precision: "text-s" };
+				}
+				const parsed = Date.parse(trimmed);
+				if (Number.isFinite(parsed))
+					return { serverMs: parsed, precision: "text-date" };
+			}
+
+			if (headerDate) {
+				const parsed = Date.parse(headerDate);
+				if (Number.isFinite(parsed))
+					return { serverMs: parsed, precision: "date-header" };
+			}
+
+			return null;
+		}
+
+		function useRemoteTime() {
+			return el.remoteTime.checked && el.timeEndpoint.value.trim() !== "";
+		}
+
+		function setLocalClock() {
+			state.offsetMs = 0;
+			state.offsetSamples = [];
+			state.clockLabel = "local";
+			state.lastRttMs = 0;
+			updateStatusThrottled();
+		}
+
+		function updateTimeSourceControls() {
+			el.timeEndpoint.disabled = !el.remoteTime.checked;
+			if (!useRemoteTime())
+				setLocalClock();
+			else
+				updateStatus();
+		}
+
+		function applyStaticHostDefaults() {
+			const host = location.hostname.toLowerCase();
+			if (!host.endsWith(".github.io"))
+				return;
+			const params = new URLSearchParams(location.search);
+			if (params.has("endpoint"))
+				return;
+			if (el.timeEndpoint.value.trim() === "time.php")
+				el.timeEndpoint.value = GITHUB_PAGES_TIME_ENDPOINT;
+		}
+
+		function resetRunClockSource() {
+			if (!state.running)
+				return;
+			state.runOffsetMs = state.offsetMs;
+			state.nextTargetMs = 0;
+			state.lastScheduledTargetMs = 0;
+			state.scheduled.clear();
+			scheduleDueEvents();
+		}
+
+		async function syncClock() {
+			if (!useRemoteTime()) {
+				setLocalClock();
+				return;
+			}
+
+			const endpoint = el.timeEndpoint.value.trim();
+			const t0 = localEpochMs();
+			const response = await fetch(endpoint, { cache: "no-store" });
+			const contentType = response.headers.get("content-type") || "";
+			let text = "";
+			if (contentType.includes("json") || contentType.includes("text"))
+				text = await response.text();
+			const t1 = localEpochMs();
+			const parsed = parseServerTime(text, response);
+			if (!parsed)
+				throw new Error("No parseable server time");
+
+			const rttMs = t1 - t0;
+			const midpoint = (t0 + t1) * 0.5;
+			const offsetMs = parsed.serverMs - midpoint;
+			state.offsetSamples.push({ offsetMs, rttMs, precision: parsed.precision });
+			state.offsetSamples.sort((a, b) => a.rttMs - b.rttMs);
+			state.offsetSamples = state.offsetSamples.slice(0, 9);
+
+			const best = state.offsetSamples.slice(0, Math.min(5, state.offsetSamples.length));
+			const offsets = best.map((sample) => sample.offsetMs).sort((a, b) => a - b);
+			state.offsetMs = offsets[Math.floor(offsets.length / 2)];
+			state.lastRttMs = best[0].rttMs;
+			state.clockLabel = parsed.precision === "date-header" ? "http date" : "http time";
+			updateStatus();
+		}
+
+		function log(line) {
+			const stamp = new Date().toISOString().slice(11, 23);
+			el.eventLog.textContent = `${stamp} ${line}\n${el.eventLog.textContent}`.slice(0, 9000);
+		}
+
+		async function requestWakeLock() {
+			if (!("wakeLock" in navigator)) {
+				state.wakeLock = null;
+				return requestMediaKeepAlive();
+			}
+
+			try {
+				state.wakeLock = await navigator.wakeLock.request("screen");
+				state.wakeLock.addEventListener("release", () => {
+					state.wakeLock = null;
+					if (state.running && document.visibilityState === "visible")
+						requestWakeLock();
+					else
+						updateStatus();
+				});
+				updateStatus();
+				return true;
+			}
+			catch (error) {
+				state.wakeLock = null;
+				const fallbackWorked = await requestMediaKeepAlive();
+				if (!fallbackWorked) {
+					el.wakeStatus.textContent = error.name || "failed";
+					el.wakeStatus.className = "bad";
+					el.wakeBadge.textContent = "failed";
+				}
+				return fallbackWorked;
+			}
+		}
+
+		async function enterFullscreen() {
+			const target = el.canvas.parentElement || document.documentElement;
+			if (!document.fullscreenElement && target.requestFullscreen)
+				await target.requestFullscreen({ navigationUI: "hide" });
+			updateFullscreenClass();
+		}
+
+		async function requestMediaKeepAlive() {
+			if (!state.keepAliveVideo) {
+				const canvas = document.createElement("canvas");
+				canvas.width = 2;
+				canvas.height = 2;
+				const ctx = canvas.getContext("2d");
+				ctx.fillStyle = "#000";
+				ctx.fillRect(0, 0, 2, 2);
+
+				const stream = canvas.captureStream ? canvas.captureStream(1) : null;
+				if (!stream) {
+					el.wakeStatus.textContent = "unsupported";
+					el.wakeStatus.className = "warn";
+					el.wakeBadge.textContent = "unsupported";
+					return false;
+				}
+
+				const video = document.createElement("video");
+				video.muted = true;
+				video.loop = true;
+				video.playsInline = true;
+				video.setAttribute("playsinline", "");
+				video.style.position = "fixed";
+				video.style.width = "1px";
+				video.style.height = "1px";
+				video.style.opacity = "0";
+				video.style.pointerEvents = "none";
+				video.srcObject = stream;
+				document.body.appendChild(video);
+				state.keepAliveCanvas = canvas;
+				state.keepAliveVideo = video;
+				state.keepAliveStream = stream;
+			}
+
+			try {
+				await state.keepAliveVideo.play();
+				updateStatus();
+				return true;
+			}
+			catch (error) {
+				el.wakeStatus.textContent = error.name || "failed";
+				el.wakeStatus.className = "bad";
+				el.wakeBadge.textContent = "failed";
+				return false;
+			}
+		}
+
+		function releaseKeepAwake() {
+			if (state.wakeLock) {
+				const lock = state.wakeLock;
+				state.wakeLock = null;
+				lock.release().catch(() => {});
+			}
+			if (state.keepAliveVideo)
+				state.keepAliveVideo.pause();
+			updateStatus();
+		}
+
+		function msToSamples(sampleRate, ms) {
+			return Math.round(sampleRate * ms / 1000);
+		}
+
+		function markerReference(sampleRate) {
+			const count = msToSamples(sampleRate, MARKER_MS);
+			const center = Math.floor(count / 2);
+			const firstCount = Math.max(1, center);
+			const secondCount = Math.max(1, count - center);
+			const firstDuration = firstCount / sampleRate;
+			const secondDuration = secondCount / sampleRate;
+			const upSlope = (MARKER_F1 - MARKER_F0) / firstDuration;
+			const downSlope = (MARKER_F1 - MARKER_F0) / secondDuration;
+			const phaseCenter = 2 * Math.PI * (
+				MARKER_F0 * firstDuration + 0.5 * upSlope * firstDuration * firstDuration
+			);
+			const tickSigma = (MARKER_TICK_MS / 1000) / 6;
+			const tickRadius = MARKER_TICK_MS / 2000;
+			const reference = new Float32Array(count);
+			let peak = 0;
+
+			for (let i = 0; i < count; i++) {
+				let phase;
+				if (i < center) {
+					const t = i / sampleRate;
+					phase = 2 * Math.PI * (MARKER_F0 * t + 0.5 * upSlope * t * t);
+				} else {
+					const t = (i - center) / sampleRate;
+					phase = phaseCenter + 2 * Math.PI * (MARKER_F1 * t - 0.5 * downSlope * t * t);
+				}
+
+				const window = 0.5 - 0.5 * Math.cos(2 * Math.PI * i / Math.max(1, count - 1));
+				const chirp = Math.sin(phase) * window;
+				const centerTime = (i - center) / sampleRate;
+				let tick = 0;
+				if (Math.abs(centerTime) <= tickRadius) {
+					const x = centerTime / tickSigma;
+					tick = (1 - x * x) * Math.exp(-0.5 * x * x);
+				}
+
+				const sample = MARKER_CHIRP_GAIN * chirp + MARKER_TICK_GAIN * tick;
+				reference[i] = sample;
+				peak = Math.max(peak, Math.abs(sample));
+			}
+
+			if (peak > 0) {
+				for (let i = 0; i < reference.length; i++)
+					reference[i] /= peak;
+			}
+
+			return reference;
+		}
+
+		function nearSilentSample(index, sampleRate, gain) {
+			const t = index / sampleRate;
+			const ramp = Math.min(1, index / Math.max(1, Math.round(sampleRate * 0.02)));
+			const carrier = Math.sin(2 * Math.PI * 191 * t) * gain * ramp;
+			const dither = (((index * 48271) % 2147483647) / 2147483647 - 0.5) * gain * 0.08;
+			return carrier + dither;
+		}
+
+		function makePacketBuffer(sequence) {
+			const audio = state.audioContext;
+			const sampleRate = audio.sampleRate;
+			const marker = markerReference(sampleRate);
+			const prerollSamples = msToSamples(sampleRate, AUDIO_PREROLL_MS);
+			const markerSamples = marker.length;
+			const guardSamples = msToSamples(sampleRate, GUARD_MS);
+			const symbolSamples = msToSamples(sampleRate, SYMBOL_MS);
+			const symbolStride = symbolSamples + guardSamples;
+			const markerStart = prerollSamples;
+			const packetSamples = prerollSamples + markerSamples + guardSamples + PAYLOAD_SYMBOLS * symbolStride;
+			const buffer = audio.createBuffer(2, packetSamples, sampleRate);
+			const left = buffer.getChannelData(0);
+			const right = buffer.getChannelData(1);
+
+			for (let i = 0; i < prerollSamples; i++) {
+				const sample = nearSilentSample(i, sampleRate, AUDIO_PREROLL_GAIN);
+				left[i] = sample;
+				right[i] = sample;
+			}
+
+			for (let i = 0; i < markerSamples; i++) {
+				left[markerStart + i] += marker[i];
+				right[markerStart + i] += marker[i];
+			}
+
+			let payload = ((sequence & 0xff) << 8) | crc8(sequence & 0xff);
+			const digits = new Array(PAYLOAD_SYMBOLS).fill(0);
+			for (let i = PAYLOAD_SYMBOLS - 1; i >= 0; i--) {
+				digits[i] = payload % PAYLOAD_BASE;
+				payload = Math.floor(payload / PAYLOAD_BASE);
+			}
+
+			const payloadStart = markerStart + markerSamples + guardSamples;
+			for (let symbol = 0; symbol < PAYLOAD_SYMBOLS; symbol++) {
+				const digit = digits[symbol];
+				const row = DTMF_ROWS[Math.floor(digit / DTMF_COLS.length)];
+				const col = DTMF_COLS[digit % DTMF_COLS.length];
+				const start = payloadStart + symbol * symbolStride;
+				for (let i = 0; i < symbolSamples; i++) {
+					const t = i / sampleRate;
+					const ramp = Math.min(
+						1,
+						i / Math.max(1, guardSamples),
+						(symbolSamples - i - 1) / Math.max(1, guardSamples)
+					);
+					const sample = 0.5 * (Math.sin(2 * Math.PI * row * t) + Math.sin(2 * Math.PI * col * t)) * ramp;
+					left[start + i] += sample;
+					right[start + i] += sample;
+				}
+			}
+
+			return buffer;
+		}
+
+		function audioOutputLatencySeconds() {
+			const audio = state.audioContext;
+			if (!audio)
+				return 0;
+			return (audio.baseLatency || 0) + (audio.outputLatency || 0);
+		}
+
+		function stableAudioOutputLatencySeconds() {
+			const latency = audioOutputLatencySeconds();
+			if (!Number.isFinite(latency) || latency <= 0)
+				return latency;
+
+			state.audioLatencySamples.push(latency);
+			if (state.audioLatencySamples.length > 21)
+				state.audioLatencySamples.shift();
+
+			const samples = state.audioLatencySamples.slice().sort((a, b) => a - b);
+			const median = samples[Math.floor(samples.length * 0.5)];
+			if (!state.displayAudioLatencySeconds || Math.abs(median - state.displayAudioLatencySeconds) > 0.05)
+				state.displayAudioLatencySeconds = median;
+			return state.displayAudioLatencySeconds;
+		}
+
+		/*
+		 * The single timing primitive. `audioAnchor` is the offset (seconds) such
+		 * that a buffer started at AudioContext time `audioAnchor + perfMs/1000` is
+		 * HEARD at the speaker at performance-clock time `perfMs`. We learn it two
+		 * ways and feed both into one median-smoothed value:
+		 *
+		 *   output timestamp:  alpha = ts.contextTime - ts.performanceTime/1000
+		 *   latency fallback:  alpha = currentTime - now/1000 - outputLatency
+		 *
+		 * Both estimate the same physical quantity. Smoothing removes per-cue jitter;
+		 * preferring the output-timestamp source (when present) keeps platforms with
+		 * an unreliable reported latency honest.
+		 */
+		function sampleAudioAnchor() {
+			const audio = state.audioContext;
+			if (!audio)
+				return;
+
+			const now = performance.now();
+			let alpha = null;
+			let source = "latency";
+
+			if (typeof audio.getOutputTimestamp === "function") {
+				const ts = audio.getOutputTimestamp();
+				if (ts && Number.isFinite(ts.contextTime) && Number.isFinite(ts.performanceTime) &&
+				    ts.performanceTime > 0 && Math.abs(ts.performanceTime - now) < 2000 &&
+				    Math.abs(ts.contextTime - audio.currentTime) < 2) {
+					alpha = ts.contextTime - ts.performanceTime / 1000;
+					source = "output";
+				}
+			}
+
+			if (alpha === null)
+				alpha = audio.currentTime - now / 1000 - audioOutputLatencySeconds();
+
+			state.anchorSamples.push({ alpha, source });
+			if (state.anchorSamples.length > ANCHOR_WINDOW)
+				state.anchorSamples.shift();
+
+			const preferred = state.anchorSamples.some((sample) => sample.source === "output")
+				? "output"
+				: "latency";
+			const pool = state.anchorSamples
+				.filter((sample) => sample.source === preferred)
+				.map((sample) => sample.alpha)
+				.sort((a, b) => a - b);
+			state.audioAnchor = pool[Math.floor(pool.length / 2)];
+			state.anchorSource = preferred;
+			state.anchorValid = true;
+		}
+
+		function fmtLead(ms) {
+			if (!Number.isFinite(ms))
+				return "-";
+			if (Math.abs(ms) >= 1000)
+				return `${(ms / 1000).toFixed(1)} s`;
+			return `${Math.round(ms)} ms`;
+		}
+
+		function ensureAudioContext() {
+			if (!state.audioContext) {
+				const AudioCtor = window.AudioContext || window.webkitAudioContext;
+				if (!AudioCtor)
+					throw new Error("Web Audio is not available");
+				state.audioContext = new AudioCtor({ latencyHint: "interactive" });
+				state.masterGain = state.audioContext.createGain();
+				state.masterGain.connect(state.audioContext.destination);
+			}
+			return state.audioContext;
+		}
+
+		function retainAudioNode(node) {
+			state.activeAudioNodes.add(node);
+			node.addEventListener("ended", () => {
+				state.activeAudioNodes.delete(node);
+			});
+		}
+
+		function stopScheduledAudioNodes() {
+			for (const node of state.activeAudioNodes) {
+				if (node === state.audioHoldSource)
+					continue;
+				try {
+					node.stop();
+				}
+				catch {
+					/* The node may already be stopped. */
+				}
+				try {
+					node.disconnect();
+				}
+				catch {
+					/* The node may already be disconnected. */
+				}
+			}
+			state.activeAudioNodes.clear();
+			if (state.audioHoldSource)
+				state.activeAudioNodes.add(state.audioHoldSource);
+		}
+
+		function startSilentAudioHold(label = "audio silent hold") {
+			const audio = state.audioContext;
+			if (!audio || !state.masterGain || state.audioHoldSource)
+				return;
+
+			const sampleRate = audio.sampleRate;
+			const durationSeconds = 0.5;
+			const samples = Math.max(1, Math.round(sampleRate * durationSeconds));
+			const buffer = audio.createBuffer(2, samples, sampleRate);
+			const left = buffer.getChannelData(0);
+			const right = buffer.getChannelData(1);
+			for (let i = 0; i < samples; i++) {
+				const sample = nearSilentSample(i, sampleRate, AUDIO_KEEPALIVE_GAIN);
+				left[i] = sample;
+				right[i] = sample;
+			}
+
+			const source = audio.createBufferSource();
+			source.buffer = buffer;
+			source.loop = true;
+			source.connect(state.masterGain);
+			retainAudioNode(source);
+			state.audioHoldSource = source;
+			source.start(audio.currentTime);
+			log(label);
+		}
+
+		function stopSilentAudioHold() {
+			const source = state.audioHoldSource;
+			if (!source)
+				return;
+
+			state.audioHoldSource = null;
+			try {
+				source.stop();
+			}
+			catch {
+				/* The source may already be stopped. */
+			}
+			try {
+				source.disconnect();
+			}
+			catch {
+				/* The source may already be disconnected. */
+			}
+			log("audio silent hold ended");
+		}
+
+		function stopStartupAudioHold() {
+			stopSilentAudioHold();
+			stopSilentMediaHold();
+		}
+
+		function silentMediaHoldUrl() {
+			if (silentMediaHoldUrl.cached)
+				return silentMediaHoldUrl.cached;
+
+			const sampleRate = 48000;
+			const durationSeconds = 1.0;
+			const samples = Math.round(sampleRate * durationSeconds);
+			const dataBytes = samples * 2;
+			const buffer = new ArrayBuffer(44 + dataBytes);
+			const view = new DataView(buffer);
+			let offset = 0;
+			function str(value) {
+				for (let i = 0; i < value.length; i++)
+					view.setUint8(offset++, value.charCodeAt(i));
+			}
+			function u32(value) {
+				view.setUint32(offset, value, true);
+				offset += 4;
+			}
+			function u16(value) {
+				view.setUint16(offset, value, true);
+				offset += 2;
+			}
+
+			str("RIFF");
+			u32(36 + dataBytes);
+			str("WAVEfmt ");
+			u32(16);
+			u16(1);
+			u16(1);
+			u32(sampleRate);
+			u32(sampleRate * 2);
+			u16(2);
+			u16(16);
+			str("data");
+			u32(dataBytes);
+			for (let i = 0; i < samples; i++) {
+				const t = i / sampleRate;
+				const carrier = Math.sin(2 * Math.PI * 173 * t) * 0.00008;
+				const dither = (((i * 16807) % 2147483647) / 2147483647 - 0.5) * 0.00004;
+				const sample = Math.max(-1, Math.min(1, carrier + dither));
+				view.setInt16(offset, Math.round(sample * 32767), true);
+				offset += 2;
+			}
+
+			let binary = "";
+			const bytes = new Uint8Array(buffer);
+			for (let i = 0; i < bytes.length; i++)
+				binary += String.fromCharCode(bytes[i]);
+			silentMediaHoldUrl.cached = `data:audio/wav;base64,${btoa(binary)}`;
+			return silentMediaHoldUrl.cached;
+		}
+
+		function ensureMediaHoldElement() {
+			if (!state.mediaHoldElement) {
+				const audio = document.createElement("audio");
+				audio.preload = "auto";
+				audio.playsInline = true;
+				audio.loop = true;
+				audio.src = silentMediaHoldUrl();
+				audio.style.display = "none";
+				document.body.appendChild(audio);
+				state.mediaHoldElement = audio;
+			}
+
+			return state.mediaHoldElement;
+		}
+
+		function beginSilentMediaHold(label = "media silent hold") {
+			const audio = ensureMediaHoldElement();
+			if (audio.paused || audio.ended) {
+				audio.currentTime = 0;
+				const playPromise = audio.play();
+				state.lastAudioSchedule = label;
+				log(label);
+				updateStatus();
+				return playPromise;
+			}
+
+			state.lastAudioSchedule = label;
+			log(label);
+			updateStatus();
+			return Promise.resolve();
+		}
+
+		function stopSilentMediaHold() {
+			if (!state.mediaHoldElement)
+				return;
+			if (state.mediaHoldElement.paused && state.mediaHoldElement.currentTime === 0)
+				return;
+
+			state.mediaHoldElement.pause();
+			state.mediaHoldElement.currentTime = 0;
+			log("media silent hold ended");
+		}
+
+		function runStart() {
+			start().catch((error) => {
+				log(`start failed: ${error.message}`);
+				state.runToken++;
+				state.starting = false;
+				state.running = false;
+				window.clearInterval(state.schedulerTimer);
+				window.clearInterval(state.syncTimer);
+				window.clearInterval(state.anchorTimer);
+				state.schedulerTimer = 0;
+				state.syncTimer = 0;
+				state.anchorTimer = 0;
+				stopStartupAudioHold();
+				state.lastAudioSchedule = error.message || "start failed";
+				el.startBtn.textContent = "Start";
+				el.startBtn.classList.add("primary");
+				updateStatus();
+				updateRunClass();
+				updateFullscreenClass();
+			});
+		}
+
+		function setAudioProbe(label, className = "") {
+			state.audioProbeLabel = label;
+			state.audioProbeClass = className;
+			updateStatus();
+		}
+
+		async function probeBrowserAudio() {
+			if (!el.audioEnabled.checked) {
+				setAudioProbe("disabled", "warn");
+				return { playable: false, webAudio: false, media: false };
+			}
+
+			setAudioProbe("probing", "warn");
+			let webAudio = false;
+			let media = false;
+			let webAudioError = "";
+			let mediaError = "";
+
+			try {
+				const audio = ensureAudioContext();
+				state.masterGain.gain.value = Math.max(0, Math.min(1, readNumber(el.gain, 0.35)));
+				startSilentAudioHold("audio probe keepalive");
+				await audio.resume();
+				webAudio = audio.state === "running";
+				if (!webAudio)
+					webAudioError = audio.state || "not running";
+			}
+			catch (error) {
+				webAudioError = error.message || error.name || "blocked";
+			}
+
+			try {
+				await beginSilentMediaHold("media probe hold");
+				media = true;
+			}
+			catch (error) {
+				mediaError = error.message || error.name || "blocked";
+			}
+
+			if (webAudio) {
+				setAudioProbe(media ? "webaudio+media ok" : "webaudio ok", "ok");
+				log(`audio probe ok webaudio${media ? " media" : ""}`);
+				return { playable: true, webAudio, media };
+			}
+
+			stopStartupAudioHold();
+			const reason = webAudioError || mediaError || "blocked";
+			setAudioProbe(media ? "media only" : "blocked", media ? "warn" : "bad");
+			log(`audio probe ${media ? "media only" : "blocked"}: ${reason}`);
+			return { playable: false, webAudio, media };
+		}
+
+		async function autoStartWhenPlayable() {
+			if (state.autoStartAttempted || !state.autoStart || state.running || state.starting)
+				return;
+
+			state.autoStartAttempted = true;
+			const result = await probeBrowserAudio();
+			if (!result.playable || state.running || state.starting) {
+				log("auto start waiting for user gesture");
+				return;
+			}
+
+			log("auto start audio allowed");
+			await start();
+		}
+
+		async function primeStartupAudioOutput() {
+			if (!el.audioEnabled.checked) {
+				state.lastAudioSchedule = "audio disabled";
+				updateStatus();
+				return null;
+			}
+
+			let mediaUnlock = Promise.resolve();
+			try {
+				mediaUnlock = beginSilentMediaHold();
+			}
+			catch (error) {
+				log(`media silent hold failed: ${error.message}`);
+			}
+			mediaUnlock.catch((error) => {
+				log(`media silent hold failed: ${error.message}`);
+				updateStatus();
+			});
+
+			const audio = ensureAudioContext();
+			state.masterGain.gain.value = Math.max(0, Math.min(1, readNumber(el.gain, 0.35)));
+			startSilentAudioHold();
+			state.lastAudioSchedule = "silent hold";
+			updateStatus();
+			await audio.resume();
+			return audio;
+		}
+
+		function scheduleAudioCue(targetMs, sequence) {
+			if (!el.audioEnabled.checked || !state.audioContext || !state.anchorValid)
+				return false;
+
+			/* Place the marker center so it is HEARD at targetMs. The buffer starts
+			 * (preroll + half marker) earlier; the anchor folds in output latency. */
+			const centerPerfMs = remoteMsToPerfMs(targetMs);
+			const startHeardPerfMs = centerPerfMs - AUDIO_PREROLL_MS - MARKER_MS * 0.5;
+			const when = state.audioAnchor + startHeardPerfMs / 1000;
+			if (when < state.audioContext.currentTime + 0.05)
+				return false;
+
+			const buffer = makePacketBuffer(sequence);
+			const source = state.audioContext.createBufferSource();
+			source.buffer = buffer;
+			source.connect(state.masterGain);
+			retainAudioNode(source);
+			source.start(when);
+			state.audioTimingLabel = `speaker anchor (${state.anchorSource})`;
+			state.lastAudioSchedule = `${state.anchorSource} seq=${sequence & 0xff} lead=${fmtLead(targetMs - remoteNowMs())}`;
+			log(`audio ${state.lastAudioSchedule}`);
+			return true;
+		}
+
+		function scheduleDueEvents() {
+			if (!state.running)
+				return;
+
+			const now = remoteNowMs();
+			const period = Math.max(1000, readNumber(el.periodMs, 3000));
+			const lead = Math.max(500, state.leadMs);
+			if (!state.nextTargetMs || state.nextTargetMs < now - period)
+				state.nextTargetMs = nextBoundary(now, lead, period);
+
+			while (state.nextTargetMs <= now + LOOKAHEAD_MS) {
+				if (!state.scheduled.has(state.nextTargetMs)) {
+					const sequence = sequenceForTarget(state.nextTargetMs);
+					const audioScheduled = scheduleAudioCue(state.nextTargetMs, sequence);
+					if (!el.audioEnabled.checked || audioScheduled) {
+						state.scheduled.set(state.nextTargetMs, { targetMs: state.nextTargetMs, sequence });
+						log(`cue seq=${sequence & 0xff} target=${fmtTime(state.nextTargetMs)} utc_ms=${Math.round(state.nextTargetMs)}`);
+					}
+					else {
+						state.lastAudioSchedule = `skipped late seq=${sequence & 0xff}`;
+						log(state.lastAudioSchedule);
+					}
+				}
+				state.lastScheduledTargetMs = state.nextTargetMs;
+				state.nextTargetMs += period;
+			}
+
+			for (const key of [...state.scheduled.keys()]) {
+				if (key < now - 5000)
+					state.scheduled.delete(key);
+			}
+			updateStatus();
+		}
+
+		function gfTables() {
+			if (gfTables.cache)
+				return gfTables.cache;
+
+			const exp = new Array(512);
+			const log = new Array(256);
+			let x = 1;
+			for (let i = 0; i < 255; i++) {
+				exp[i] = x;
+				log[x] = i;
+				x <<= 1;
+				if (x & 0x100)
+					x ^= 0x11d;
+			}
+			for (let i = 255; i < 512; i++)
+				exp[i] = exp[i - 255];
+			gfTables.cache = { exp, log };
+			return gfTables.cache;
+		}
+
+		function gfMul(a, b) {
+			if (!a || !b)
+				return 0;
+			const { exp, log } = gfTables();
+			return exp[log[a] + log[b]];
+		}
+
+		function rsGenerator(degree) {
+			let poly = [1];
+			for (let root = 0; root < degree; root++) {
+				const next = new Array(poly.length + 1).fill(0);
+				const alpha = gfTables().exp[root];
+				for (let i = 0; i < poly.length; i++) {
+					next[i] ^= poly[i];
+					next[i + 1] ^= gfMul(poly[i], alpha);
+				}
+				poly = next;
+			}
+			return poly;
+		}
+
+		function rsRemainder(dataCodewords, degree) {
+			const generator = rsGenerator(degree);
+			const result = new Array(degree).fill(0);
+			for (const value of dataCodewords) {
+				const factor = value ^ result.shift();
+				result.push(0);
+				for (let i = 0; i < degree; i++)
+					result[i] ^= gfMul(generator[i + 1], factor);
+			}
+			return result;
+		}
+
+		function appendBits(bits, value, count) {
+			for (let i = count - 1; i >= 0; i--)
+				bits.push(((value >>> i) & 1) !== 0);
+		}
+
+		function qrPayload(targetMs, sequence) {
+			const phaseMs = Math.max(1, Math.round(Math.max(80, state.visualMs) * 0.5));
+			const code = sequence & 0xff;
+			return `p=2,s=${code},n=${Math.round(targetMs)},q=${phaseMs},i=${code},m=1`;
+		}
+
+		function qrDataCodewords(payload) {
+			const bytes = [...new TextEncoder().encode(payload)];
+			const capacityBits = QR_DATA_CODEWORDS * 8;
+			const bits = [];
+			appendBits(bits, 0x4, 4);
+			appendBits(bits, bytes.length, 8);
+			for (const byte of bytes)
+				appendBits(bits, byte, 8);
+
+			if (bits.length > capacityBits)
+				throw new Error("QR payload too long");
+			const terminator = Math.min(4, capacityBits - bits.length);
+			appendBits(bits, 0, terminator);
+			while (bits.length % 8)
+				bits.push(false);
+
+			const codewords = [];
+			for (let i = 0; i < bits.length; i += 8) {
+				let value = 0;
+				for (let j = 0; j < 8; j++)
+					value = (value << 1) | (bits[i + j] ? 1 : 0);
+				codewords.push(value);
+			}
+			for (let pad = 0; codewords.length < QR_DATA_CODEWORDS; pad++)
+				codewords.push(pad % 2 ? 0x11 : 0xec);
+			return codewords;
+		}
+
+		function makeQrMatrix(payload) {
+			const cached = state.qrCache.get(payload);
+			if (cached)
+				return cached;
+
+			const dataCodewords = qrDataCodewords(payload);
+			const codewords = dataCodewords.concat(rsRemainder(dataCodewords, QR_ECC_CODEWORDS));
+			const size = QR_SIZE;
+			const modules = Array.from({ length: size }, () => new Array(size).fill(false));
+			const reserved = Array.from({ length: size }, () => new Array(size).fill(false));
+
+			function setFunction(col, row, dark) {
+				if (row < 0 || row >= size || col < 0 || col >= size)
+					return;
+				modules[row][col] = dark;
+				reserved[row][col] = true;
+			}
+
+			function drawFinder(col, row) {
+				for (let y = -1; y <= 7; y++) {
+					for (let x = -1; x <= 7; x++) {
+						const xx = col + x;
+						const yy = row + y;
+						if (xx < 0 || xx >= size || yy < 0 || yy >= size)
+							continue;
+						const dist = Math.max(Math.abs(x - 3), Math.abs(y - 3));
+						setFunction(xx, yy, dist === 3 || dist <= 1);
+					}
+				}
+			}
+
+			function drawAlignment(col, row) {
+				for (let y = -2; y <= 2; y++) {
+					for (let x = -2; x <= 2; x++) {
+						const dist = Math.max(Math.abs(x), Math.abs(y));
+						setFunction(col + x, row + y, dist === 2 || dist === 0);
+					}
+				}
+			}
+
+			function formatBits(mask) {
+				let data = mask;
+				let rem = data << 10;
+				for (let bit = 14; bit >= 10; bit--) {
+					if ((rem >>> bit) & 1)
+						rem ^= 0x537 << (bit - 10);
+				}
+				return ((data << 10) | (rem & 0x3ff)) ^ 0x5412;
+			}
+
+			function drawFormat(mask) {
+				const bits = formatBits(mask);
+				const bit = (i) => ((bits >>> i) & 1) !== 0;
+
+				for (let i = 0; i <= 5; i++)
+					setFunction(8, i, bit(i));
+				setFunction(8, 7, bit(6));
+				setFunction(8, 8, bit(7));
+				setFunction(7, 8, bit(8));
+				for (let i = 9; i < 15; i++)
+					setFunction(14 - i, 8, bit(i));
+
+				for (let i = 0; i < 8; i++)
+					setFunction(size - 1 - i, 8, bit(i));
+				for (let i = 8; i < 15; i++)
+					setFunction(8, size - 15 + i, bit(i));
+				setFunction(8, size - 8, true);
+			}
+
+			drawFinder(0, 0);
+			drawFinder(size - 7, 0);
+			drawFinder(0, size - 7);
+			drawAlignment(22, 22);
+			for (let i = 8; i < size - 8; i++) {
+				setFunction(i, 6, i % 2 === 0);
+				setFunction(6, i, i % 2 === 0);
+			}
+			drawFormat(0);
+
+			let bitIndex = 0;
+			let upward = true;
+			for (let right = size - 1; right >= 1; right -= 2) {
+				if (right === 6)
+					right--;
+				for (let vertical = 0; vertical < size; vertical++) {
+					const row = upward ? size - 1 - vertical : vertical;
+					for (let j = 0; j < 2; j++) {
+						const col = right - j;
+						if (reserved[row][col])
+							continue;
+						const codeword = codewords[Math.floor(bitIndex / 8)] || 0;
+						modules[row][col] = ((codeword >>> (7 - bitIndex % 8)) & 1) !== 0;
+						bitIndex++;
+					}
+				}
+				upward = !upward;
+			}
+
+			function maskBit(mask, row, col) {
+				switch (mask) {
+				case 0:
+					return (row + col) % 2 === 0;
+				case 1:
+					return row % 2 === 0;
+				case 2:
+					return col % 3 === 0;
+				case 3:
+					return (row + col) % 3 === 0;
+				case 4:
+					return (Math.floor(row / 2) + Math.floor(col / 3)) % 2 === 0;
+				case 5:
+					return (row * col) % 2 + (row * col) % 3 === 0;
+				case 6:
+					return ((row * col) % 2 + (row * col) % 3) % 2 === 0;
+				default:
+					return ((row + col) % 2 + (row * col) % 3) % 2 === 0;
+				}
+			}
+
+			function withMask(mask) {
+				const copy = modules.map((row) => row.slice());
+				for (let row = 0; row < size; row++) {
+					for (let col = 0; col < size; col++) {
+						if (!reserved[row][col] && maskBit(mask, row, col))
+							copy[row][col] = !copy[row][col];
+					}
+				}
+				return copy;
+			}
+
+			function penalty(matrix) {
+				let score = 0;
+				function scoreLine(get) {
+					for (let major = 0; major < size; major++) {
+						let runColor = get(major, 0);
+						let runLength = 1;
+						for (let minor = 1; minor < size; minor++) {
+							const color = get(major, minor);
+							if (color === runColor) {
+								runLength++;
+								continue;
+							}
+							if (runLength >= 5)
+								score += 3 + runLength - 5;
+							runColor = color;
+							runLength = 1;
+						}
+						if (runLength >= 5)
+							score += 3 + runLength - 5;
+					}
+				}
+
+				scoreLine((row, col) => matrix[row][col]);
+				scoreLine((col, row) => matrix[row][col]);
+
+				for (let row = 0; row < size - 1; row++) {
+					for (let col = 0; col < size - 1; col++) {
+						const color = matrix[row][col];
+						if (matrix[row][col + 1] === color && matrix[row + 1][col] === color &&
+						    matrix[row + 1][col + 1] === color) {
+							score += 3;
+						}
+					}
+				}
+
+				const pattern = [true, false, true, true, true, false, true, false, false, false, false];
+				function hasPattern(get, major, minor) {
+					for (let i = 0; i < pattern.length; i++) {
+						if (get(major, minor + i) !== pattern[i])
+							return false;
+					}
+					return true;
+				}
+				for (let row = 0; row < size; row++) {
+					for (let col = 0; col <= size - pattern.length; col++) {
+						if (hasPattern((r, c) => matrix[r][c], row, col) ||
+						    hasPattern((r, c) => matrix[r][size - 1 - c], row, col)) {
+							score += 40;
+						}
+					}
+				}
+				for (let col = 0; col < size; col++) {
+					for (let row = 0; row <= size - pattern.length; row++) {
+						if (hasPattern((c, r) => matrix[r][c], col, row) ||
+						    hasPattern((c, r) => matrix[size - 1 - r][c], col, row)) {
+							score += 40;
+						}
+					}
+				}
+
+				let dark = 0;
+				for (let row = 0; row < size; row++) {
+					for (let col = 0; col < size; col++) {
+						if (matrix[row][col])
+							dark++;
+					}
+				}
+				const total = size * size;
+				score += Math.floor(Math.abs(dark * 20 - total * 10) / total) * 10;
+				return score;
+			}
+
+			let bestMask = 0;
+			let bestMatrix = withMask(0);
+			let bestPenalty = penalty(bestMatrix);
+			for (let mask = 1; mask < 8; mask++) {
+				const matrix = withMask(mask);
+				const p = penalty(matrix);
+				if (p < bestPenalty) {
+					bestMask = mask;
+					bestMatrix = matrix;
+					bestPenalty = p;
+				}
+			}
+
+			modules.splice(0, modules.length, ...bestMatrix);
+			drawFormat(bestMask);
+			state.qrCache.set(payload, modules);
+			if (state.qrCache.size > 256)
+				state.qrCache.delete(state.qrCache.keys().next().value);
+			return modules;
+		}
+
+		function drawQr(ctx, square, targetMs, sequence) {
+			const payload = qrPayload(targetMs, sequence);
+			const modules = makeQrMatrix(payload);
+			const quiet = 4;
+			const totalCells = modules.length + quiet * 2;
+			const cell = Math.max(1, Math.floor(square.size / totalCells));
+			const actual = cell * totalCells;
+			const x = Math.round(square.x + (square.size - actual) * 0.5);
+			const y = Math.round(square.y + (square.size - actual) * 0.5);
+
+			ctx.fillStyle = "#fff";
+			ctx.fillRect(x, y, actual, actual);
+			ctx.fillStyle = "#000";
+			for (let row = 0; row < modules.length; row++) {
+				for (let col = 0; col < modules.length; col++) {
+					if (modules[row][col])
+						ctx.fillRect(x + (col + quiet) * cell, y + (row + quiet) * cell, cell, cell);
+				}
+			}
+		}
+
+		function drawNeutralFrame(ctx) {
+			ctx.fillStyle = VIDEO_NEUTRAL;
+			ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+		}
+
+		function markerSquare(w, h) {
+			const size = Math.min(w, h) * 0.88;
+			return {
+				x: (w - size) * 0.5,
+				y: (h - size) * 0.5,
+				size,
+			};
+		}
+
+		function referencePoints(square) {
+			const centerX = square.x + square.size * 0.5;
+			const centerY = square.y + square.size * 0.5;
+			const corners = [
+				[square.x, square.y],
+				[square.x + square.size, square.y],
+				[square.x + square.size, square.y + square.size],
+				[square.x, square.y + square.size],
+			];
+			return corners.map(([x, y]) => [
+				(x * 15 + centerX * 9) / 24,
+				(y * 15 + centerY * 9) / 24,
+			]);
+		}
+
+		function drawMarkerPhase(ctx, square, phaseIndex, dpr) {
+			drawNeutralFrame(ctx);
+
+			const radius = Math.max(18 * dpr, square.size * 0.085);
+			const points = referencePoints(square);
+			for (let i = 0; i < points.length; i++) {
+				const high = (i % 2) === phaseIndex;
+				ctx.beginPath();
+				ctx.arc(points[i][0], points[i][1], radius, 0, Math.PI * 2);
+				ctx.fillStyle = high ? "#f2f2f2" : "#202020";
+				ctx.fill();
+			}
+		}
+
+		function fmtSignedProgressMs(ms) {
+			const rounded = Math.round(ms);
+			if (rounded > 0)
+				return `+${rounded} ms`;
+			return `${rounded} ms`;
+		}
+
+		function drawSyncProgress(ctx, square, event, now, dpr) {
+			if (!event || !Number.isFinite(event.targetMs))
+				return;
+
+			const delta = now - event.targetMs;
+			const clampedDelta = Math.max(-AUDIO_SCOPE_WINDOW_MS, Math.min(AUDIO_SCOPE_WINDOW_MS, delta));
+
+			const safeTop = square.y + square.size;
+			const bottomMargin = ctx.canvas.height - safeTop;
+			if (bottomMargin < 34 * dpr)
+				return;
+
+			const marginX = Math.max(18 * dpr, ctx.canvas.width * 0.08);
+			const x = Math.round(marginX);
+			const width = Math.max(1, Math.round(ctx.canvas.width - marginX * 2));
+			const height = Math.max(24 * dpr, Math.min(78 * dpr, bottomMargin * 0.74));
+			const y = Math.round(safeTop + (bottomMargin - height) * 0.5);
+			const padX = Math.max(8 * dpr, width * 0.025);
+			const padY = Math.max(5 * dpr, height * 0.16);
+			const x0 = x + padX;
+			const y0 = y + padY;
+			const innerWidth = width - padX * 2;
+			const innerHeight = height - padY * 2;
+			const midY = y0 + innerHeight * 0.45;
+			const amp = innerHeight * 0.28;
+			const tToX = (tMs) => x0 + (tMs + AUDIO_SCOPE_WINDOW_MS) / (AUDIO_SCOPE_WINDOW_MS * 2) * innerWidth;
+			const chirpStart = -MARKER_MS * 0.5;
+			const chirpEnd = MARKER_MS * 0.5;
+			const payloadStart = chirpEnd + GUARD_MS;
+			const payloadStride = SYMBOL_MS + GUARD_MS;
+			const payloadBlocks = Array.from({ length: PAYLOAD_SYMBOLS }, (_, index) => {
+				const start = payloadStart + index * payloadStride;
+				return { start, end: start + SYMBOL_MS };
+			});
+			const progress = (clampedDelta + AUDIO_SCOPE_WINDOW_MS) / (AUDIO_SCOPE_WINDOW_MS * 2);
+			const indicatorX = x0 + innerWidth * progress;
+			const eventX = tToX(0);
+			const chirpStartX = tToX(chirpStart);
+			const chirpEndX = tToX(chirpEnd);
+
+			ctx.save();
+			ctx.fillStyle = "rgba(20, 24, 29, 0.78)";
+			ctx.fillRect(x, y, width, height);
+			ctx.fillStyle = "rgba(95, 183, 255, 0.18)";
+			ctx.fillRect(x0, y, Math.max(0, indicatorX - x0), height);
+			ctx.fillStyle = "rgba(237, 242, 245, 0.12)";
+			ctx.fillRect(chirpStartX, y0, chirpEndX - chirpStartX, innerHeight);
+			for (let i = 0; i < payloadBlocks.length; i++) {
+				const block = payloadBlocks[i];
+				const startX = tToX(Math.max(-AUDIO_SCOPE_WINDOW_MS, block.start));
+				const endX = tToX(Math.min(AUDIO_SCOPE_WINDOW_MS, block.end));
+				if (endX <= x0 || startX >= x0 + innerWidth)
+					continue;
+				ctx.fillStyle = i % 2 ? "rgba(95, 183, 255, 0.16)" : "rgba(95, 183, 255, 0.24)";
+				ctx.fillRect(startX, y0 + innerHeight * 0.58, endX - startX, innerHeight * 0.22);
+			}
+
+			ctx.strokeStyle = "rgba(237, 242, 245, 0.24)";
+			ctx.lineWidth = Math.max(1, dpr);
+			for (const tickMs of [
+				-AUDIO_SCOPE_WINDOW_MS,
+				-AUDIO_SCOPE_WINDOW_MS * 0.5,
+				0,
+				AUDIO_SCOPE_WINDOW_MS * 0.5,
+				AUDIO_SCOPE_WINDOW_MS,
+			]) {
+				const tickX = tToX(tickMs);
+				ctx.beginPath();
+				ctx.moveTo(tickX, y0);
+				ctx.lineTo(tickX, y0 + innerHeight);
+				ctx.stroke();
+			}
+
+			ctx.strokeStyle = "rgba(237, 242, 245, 0.3)";
+			ctx.beginPath();
+			ctx.moveTo(x0, midY);
+			ctx.lineTo(x0 + innerWidth, midY);
+			ctx.stroke();
+
+			ctx.strokeStyle = "rgba(240, 184, 92, 0.5)";
+			ctx.lineWidth = Math.max(1, dpr);
+			ctx.beginPath();
+			ctx.moveTo(chirpStartX, y0 + innerHeight * 0.08);
+			ctx.lineTo(chirpStartX, y0 + innerHeight * 0.92);
+			ctx.moveTo(chirpEndX, y0 + innerHeight * 0.08);
+			ctx.lineTo(chirpEndX, y0 + innerHeight * 0.92);
+			for (const block of payloadBlocks) {
+				const startX = tToX(block.start);
+				const endX = tToX(block.end);
+				ctx.moveTo(startX, y0 + innerHeight * 0.56);
+				ctx.lineTo(startX, y0 + innerHeight * 0.86);
+				ctx.moveTo(endX, y0 + innerHeight * 0.62);
+				ctx.lineTo(endX, y0 + innerHeight * 0.82);
+			}
+			ctx.stroke();
+
+			ctx.strokeStyle = "#edf2f5";
+			ctx.lineWidth = Math.max(1.4, 1.4 * dpr);
+			ctx.beginPath();
+			for (let i = 0; i <= 180; i++) {
+				const t = chirpStart + (chirpEnd - chirpStart) * (i / 180);
+				const p = (t - chirpStart) / MARKER_MS;
+				const envelope = 0.5 - 0.5 * Math.cos(2 * Math.PI * p);
+				const phase = 2 * Math.PI * (6.2 * p + 7.4 * p * p);
+				const px = tToX(t);
+				const py = midY - Math.sin(phase) * envelope * amp;
+				if (i === 0)
+					ctx.moveTo(px, py);
+				else
+					ctx.lineTo(px, py);
+			}
+			ctx.stroke();
+
+			ctx.fillStyle = "#f0b85c";
+			ctx.beginPath();
+			ctx.arc(eventX, midY, Math.max(3.2 * dpr, 4), 0, Math.PI * 2);
+			ctx.fill();
+
+			ctx.strokeStyle = "#07110d";
+			ctx.lineWidth = Math.max(1, 1.4 * dpr);
+			ctx.beginPath();
+			ctx.moveTo(indicatorX, y0);
+			ctx.lineTo(indicatorX, y0 + innerHeight);
+			ctx.stroke();
+
+			ctx.strokeStyle = "#edf2f5";
+			ctx.lineWidth = Math.max(2, 2 * dpr);
+			ctx.beginPath();
+			ctx.moveTo(eventX, y0 - 2 * dpr);
+			ctx.lineTo(eventX, y0 + innerHeight + 2 * dpr);
+			ctx.stroke();
+
+			if (height >= 38 * dpr) {
+				const fontSize = Math.max(8 * dpr, Math.min(11 * dpr, height * 0.15));
+				ctx.font = `${fontSize}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+				ctx.textAlign = "center";
+				ctx.textBaseline = "middle";
+				ctx.fillStyle = "rgba(237, 242, 245, 0.86)";
+				ctx.fillText(`-${AUDIO_SCOPE_WINDOW_MS}`, x0, y0 + innerHeight + fontSize * 0.82);
+				ctx.fillText("0", eventX, y0 + innerHeight + fontSize * 0.82);
+				ctx.fillText(`+${AUDIO_SCOPE_WINDOW_MS}`, x0 + innerWidth, y0 + innerHeight + fontSize * 0.82);
+				ctx.fillStyle = "#5fb7ff";
+				ctx.fillText(fmtSignedProgressMs(delta), indicatorX, y0 - fontSize * 0.78);
+			}
+			ctx.restore();
+		}
+
+		function nearestEvent(now) {
+			let best = null;
+			let bestAbs = Infinity;
+			for (const event of state.scheduled.values()) {
+				const delta = event.targetMs - now;
+				const abs = Math.abs(delta);
+				if (abs < bestAbs) {
+					best = event;
+					bestAbs = abs;
+				}
+			}
+			return best;
+		}
+
+		function drawStage() {
+			const canvas = el.canvas;
+			const ctx = canvas.getContext("2d");
+			const dpr = canvasDpr();
+			const rect = canvas.getBoundingClientRect();
+			const w = Math.max(1, Math.round(rect.width * dpr));
+			const h = Math.max(1, Math.round(rect.height * dpr));
+			if (canvas.width !== w || canvas.height !== h) {
+				canvas.width = w;
+				canvas.height = h;
+			}
+
+			const realNow = remoteNowMs();
+			state.lastFrameMs = realNow;
+			/* Video flips at the same wall instant as audio, advanced by the per-device
+			 * display trim so the photons (not the draw call) land on the target. */
+			const videoNow = realNow + state.videoTrimMs;
+			const period = Math.max(1000, readNumber(el.periodMs, 3000));
+			const visualMs = Math.max(80, state.visualMs);
+			const event = nearestEvent(realNow);
+			const delta = event ? videoNow - event.targetMs : Infinity;
+			const phaseMs = visualMs * 0.5;
+			const active = Math.abs(delta) <= phaseMs;
+			const qrVisible = event && delta < -phaseMs && delta >= -QR_DISPLAY_LEAD_MS;
+
+			const nextTargetMs = nextBoundary(realNow, state.leadMs, period);
+			const next = event || { targetMs: nextTargetMs, sequence: sequenceForTarget(nextTargetMs) };
+			const upcomingTargetMs = nextBoundary(realNow, 0, period);
+			const upcoming = { targetMs: upcomingTargetMs, sequence: sequenceForTarget(upcomingTargetMs) };
+			const progressEvent = state.running
+				? event && Math.abs(realNow - event.targetMs) <= AUDIO_SCOPE_WINDOW_MS
+					? event
+					: event && event.targetMs > realNow
+						? event
+						: upcoming
+				: null;
+			const square = markerSquare(w, h);
+
+			if (active) {
+				drawMarkerPhase(ctx, square, delta < 0 ? 0 : 1, dpr);
+			}
+			else if (qrVisible) {
+				drawNeutralFrame(ctx);
+				drawQr(ctx, square, event.targetMs, event.sequence);
+			}
+			else {
+				drawNeutralFrame(ctx);
+			}
+
+			if (shouldDrawSyncProgress())
+				drawSyncProgress(ctx, square, progressEvent, realNow, dpr);
+			updateBadges(next, realNow);
+			requestAnimationFrame(drawStage);
+		}
+
+		function updateBadges(next, now) {
+			if (state.running || performance.now() - state.lastBadgeUpdateMs < 250)
+				return;
+			state.lastBadgeUpdateMs = performance.now();
+			el.clockBadge.textContent = state.clockLabel;
+			el.nextBadge.textContent = next && Number.isFinite(next.targetMs) ? `${(next.targetMs - now).toFixed(0)} ms` : "-";
+			el.anchorBadge.textContent = state.anchorValid ? `${state.anchorSource} ${state.videoTrimMs >= 0 ? "+" : ""}${Math.round(state.videoTrimMs)}` : "-";
+			el.wakeBadge.textContent = state.wakeLock ? "locked" : state.keepAliveVideo && !state.keepAliveVideo.paused ? "media" : "idle";
+		}
+
+		function updateStatus() {
+			state.lastStatusUpdateMs = performance.now();
+			el.clockSource.textContent = state.clockLabel;
+			el.clockSource.className = state.clockLabel === "local" ? "warn" : "ok";
+			el.clockOffset.textContent = fmtMs(state.offsetMs);
+			el.clockRtt.textContent = state.lastRttMs ? fmtMs(state.lastRttMs, 2) : "-";
+			el.audioProbe.textContent = state.audioProbeLabel;
+			el.audioProbe.className = state.audioProbeClass;
+			el.schedulerStatus.textContent = state.starting ? "starting" : state.running ? "running" : "stopped";
+			el.schedulerStatus.className = state.running ? "ok" : state.starting ? "warn" : "";
+			if (state.wakeLock) {
+				el.wakeStatus.textContent = "locked";
+				el.wakeStatus.className = "ok";
+			}
+			else if (state.keepAliveVideo && !state.keepAliveVideo.paused) {
+				el.wakeStatus.textContent = "media fallback";
+				el.wakeStatus.className = "warn";
+			}
+			else {
+				el.wakeStatus.textContent = "idle";
+				el.wakeStatus.className = "";
+			}
+
+			if (state.anchorValid) {
+				el.audioAnchor.textContent = `${state.anchorSource} · video ${fmtSignedProgressMs(state.videoTrimMs)}`;
+				el.audioAnchor.className = state.anchorSource === "output" ? "ok" : "warn";
+			}
+			else {
+				el.audioAnchor.textContent = `video ${fmtSignedProgressMs(state.videoTrimMs)}`;
+				el.audioAnchor.className = "";
+			}
+
+			if (state.audioContext) {
+				el.audioLatency.textContent = `${fmtMs(stableAudioOutputLatencySeconds() * 1000, 2)}`;
+				el.audioState.textContent = `${state.audioContext.state} ${state.lastAudioSchedule}`;
+				el.audioState.className = state.audioContext.state === "running" ? "ok" : "warn";
+			}
+			else {
+				el.audioLatency.textContent = "-";
+				el.audioState.textContent = "-";
+				el.audioState.className = "";
+			}
+		}
+
+		function updateStatusThrottled(intervalMs = 250) {
+			if (performance.now() - state.lastStatusUpdateMs < intervalMs)
+				return;
+			updateStatus();
+		}
+
+		async function start() {
+			if (state.running || state.starting)
+				return stop();
+
+			const token = ++state.runToken;
+			state.starting = true;
+			state.running = false;
+			el.startBtn.textContent = "Stop";
+			el.startBtn.classList.remove("primary");
+			updateStatus();
+			updateRunClass();
+			updateFullscreenClass();
+
+			await primeStartupAudioOutput();
+			if (token !== state.runToken || !state.starting)
+				return;
+
+			/* Seed the anchor immediately so the first lookahead window schedules. */
+			state.anchorSamples = [];
+			state.anchorValid = false;
+			sampleAudioAnchor();
+
+			try {
+				await requestWakeLock();
+			}
+			catch {
+				updateStatus();
+			}
+			if (token !== state.runToken || !state.starting)
+				return;
+
+			if (state.autoSync && useRemoteTime()) {
+				try {
+					await syncClock();
+				}
+				catch (error) {
+					log(`sync failed: ${error.message}`);
+				}
+			}
+			if (token !== state.runToken || !state.starting)
+				return;
+
+			state.starting = false;
+			state.running = true;
+			state.nextTargetMs = 0;
+			state.lastScheduledTargetMs = 0;
+			state.audioLatencySamples = [];
+			state.displayAudioLatencySeconds = 0;
+			state.audioTimingLabel = "-";
+			state.runOffsetMs = state.offsetMs;
+			state.scheduled.clear();
+			sampleAudioAnchor();
+			updateStatus();
+			updateRunClass();
+			updateFullscreenClass();
+			scheduleDueEvents();
+			state.schedulerTimer = window.setInterval(scheduleDueEvents, SCHEDULER_TICK_MS);
+			state.anchorTimer = window.setInterval(sampleAudioAnchor, ANCHOR_TICK_MS);
+			state.syncTimer = window.setInterval(() => {
+				if (state.running && state.autoSync && useRemoteTime()) {
+					syncClock().catch((error) => log(`sync failed: ${error.message}`));
+				}
+			}, 15000);
+		}
+
+		function stop() {
+			state.runToken++;
+			state.starting = false;
+			state.running = false;
+			window.clearInterval(state.schedulerTimer);
+			window.clearInterval(state.syncTimer);
+			window.clearInterval(state.anchorTimer);
+			state.schedulerTimer = 0;
+			state.syncTimer = 0;
+			state.anchorTimer = 0;
+			state.anchorSamples = [];
+			state.anchorValid = false;
+			state.audioLatencySamples = [];
+			state.displayAudioLatencySeconds = 0;
+			state.audioTimingLabel = "-";
+			state.lastAudioSchedule = "-";
+			state.scheduled.clear();
+			stopScheduledAudioNodes();
+			stopStartupAudioHold();
+			el.startBtn.textContent = "Start";
+			el.startBtn.classList.add("primary");
+			releaseKeepAwake();
+			updateStatus();
+			updateRunClass();
+			updateFullscreenClass();
+		}
+
+		function updateRunClass() {
+			document.body.classList.toggle("generator-running", state.running);
+		}
+
+		function updateFullscreenClass() {
+			document.body.classList.toggle("fullscreen-running", !!document.fullscreenElement && state.running);
+		}
+
+		function loadStoredTrim() {
+			try {
+				const stored = Number(localStorage.getItem(TRIM_STORAGE_KEY));
+				if (Number.isFinite(stored))
+					state.videoTrimMs = stored;
+			}
+			catch {
+				/* localStorage may be unavailable in private mode. */
+			}
+		}
+
+		function applyVideoTrim(value, persist = true) {
+			const trim = Number.isFinite(value) ? Math.round(value) : 0;
+			state.videoTrimMs = trim;
+			el.videoTrim.value = String(trim);
+			if (persist) {
+				try {
+					localStorage.setItem(TRIM_STORAGE_KEY, String(trim));
+				}
+				catch {
+					/* Ignore storage failures. */
+				}
+			}
+			updateStatus();
+		}
+
+		function loadQuery() {
+			const params = new URLSearchParams(location.search);
+			const map = {
+				endpoint: el.timeEndpoint,
+				period: el.periodMs,
+				gain: el.gain,
+			};
+			for (const [key, input] of Object.entries(map)) {
+				if (params.has(key))
+					input.value = params.get(key);
+			}
+			if (params.get("time") === "local" || params.get("remote") === "0")
+				el.remoteTime.checked = false;
+			if (params.get("time") === "remote" || params.get("remote") === "1")
+				el.remoteTime.checked = true;
+			if (params.has("endpoint") && !params.get("endpoint"))
+				el.remoteTime.checked = false;
+			if (params.has("lead")) {
+				const lead = Number(params.get("lead"));
+				if (Number.isFinite(lead))
+					state.leadMs = Math.max(500, lead);
+			}
+			if (params.has("visual")) {
+				const visual = Number(params.get("visual"));
+				if (Number.isFinite(visual))
+					state.visualMs = Math.max(80, visual);
+			}
+			if (params.has("videotrim")) {
+				const trim = Number(params.get("videotrim"));
+				if (Number.isFinite(trim))
+					state.videoTrimMs = Math.round(trim);
+			}
+			if (params.get("audio") === "0")
+				el.audioEnabled.checked = false;
+			if (params.get("autosync") === "0")
+				state.autoSync = false;
+			if (params.get("autostart") === "0")
+				state.autoStart = false;
+			if (params.get("autostart") === "1")
+				state.autoStart = true;
+			if (params.get("scope") === "0")
+				state.scopeMode = "off";
+			if (params.get("scope") === "1")
+				state.scopeMode = "on";
+			el.videoTrim.value = String(Math.round(state.videoTrimMs));
+			applyStaticHostDefaults();
+			updateTimeSourceControls();
+		}
+
+		el.startBtn.addEventListener("click", runStart);
+		el.startBtn.addEventListener("touchend", (event) => {
+			event.preventDefault();
+			runStart();
+		}, { passive: false });
+		el.fullscreenBtn.addEventListener("click", async () => {
+			try {
+				await enterFullscreen();
+			}
+			catch (error) {
+				log(`fullscreen failed: ${error.message}`);
+			}
+		});
+		el.remoteTime.addEventListener("change", () => {
+			updateTimeSourceControls();
+			if (!state.running)
+				return;
+			if (!useRemoteTime()) {
+				resetRunClockSource();
+				return;
+			}
+			syncClock()
+				.then(resetRunClockSource)
+				.catch((error) => log(`sync failed: ${error.message}`));
+		});
+		el.timeEndpoint.addEventListener("input", () => {
+			updateTimeSourceControls();
+		});
+		el.gain.addEventListener("input", () => {
+			if (state.masterGain)
+				state.masterGain.gain.value = Math.max(0, Math.min(1, readNumber(el.gain, 0.35)));
+		});
+		el.videoTrim.addEventListener("change", () => {
+			applyVideoTrim(readNumber(el.videoTrim, 0));
+		});
+		el.trimDown.addEventListener("click", () => {
+			applyVideoTrim(state.videoTrimMs - 1);
+		});
+		el.trimUp.addEventListener("click", () => {
+			applyVideoTrim(state.videoTrimMs + 1);
+		});
+		document.addEventListener("visibilitychange", () => {
+			if (document.visibilityState === "visible" && state.running && !state.wakeLock)
+				requestWakeLock();
+		});
+		document.addEventListener("fullscreenchange", () => {
+			updateFullscreenClass();
+		});
+
+		try {
+			ensureMediaHoldElement().load();
+		}
+		catch {
+			/* Playback warm-up will retry on Start. */
+		}
+
+		loadStoredTrim();
+		loadQuery();
+		updateStatus();
+		window.setTimeout(() => {
+			autoStartWhenPlayable().catch((error) => {
+				setAudioProbe("blocked", "bad");
+				log(`auto start failed: ${error.message}`);
+			});
+		}, 250);
+		requestAnimationFrame(drawStage);
+	})();
+	</script>
+</body>
+</html>
