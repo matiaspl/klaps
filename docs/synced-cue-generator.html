@@ -317,7 +317,7 @@
 
 	<aside class="panel">
 		<h1>AVS Cue Generator</h1>
-		<p class="tagline">Single-clock build: audio is master, video follows the same instant. One display-trim per device — no per-cue latency guessing.</p>
+		<p class="tagline">Audio and video are emitted in sync at submit time and left to their natural device latencies — no latency guessing. One display-trim per device absorbs the screen-vs-speaker skew.</p>
 
 		<div class="row">
 			<button id="startBtn" class="primary">Start</button>
@@ -355,7 +355,7 @@
 					<button id="trimUp" type="button" title="Flip video later">+</button>
 				</div>
 			</div>
-			<p class="hint">Audio output latency is measured and compensated automatically. Set this once per device so the measured A/V offset reads ~0: raise it if video lands late, lower it if early. Saved on this device.</p>
+			<p class="hint">Audio and video leave the device with their own hardware latencies, which we do not try to measure. Set this trim once per device so the observed A/V offset reads ~0: raise it if video lands late, lower it if early. Saved on this device.</p>
 		</div>
 
 		<div class="group status">
@@ -384,12 +384,16 @@
 		 * fiducial geometry) are identical to ntp-cue-generator.html so the OBS
 		 * analyzer in sync-test-output.cpp decodes this generator unchanged.
 		 *
-		 * What is new here is the timing core: instead of estimating audio output
-		 * latency per cue (and branching per platform), we keep ONE smoothed scalar
-		 * `audioAnchor` that maps the performance clock to the AudioContext clock at
-		 * the speaker. Audio is the master; video flips at the same wall instant and
-		 * is corrected by a single per-device display trim. Relative A/V offset is
-		 * therefore stable and identical across desktop and mobile browsers.
+		 * What is new here is the timing core. It is a realtime loop, not a queue:
+		 * every animation frame fires the next audio beat if its start time just came
+		 * due. Audio and video are submitted in sync against ONE smoothed scalar
+		 * `audioAnchor` (the offset between performance.now and AudioContext time) and
+		 * then left to leave the device with their own hardware latencies -- we make
+		 * no attempt to measure or compensate output/display latency, since neither is
+		 * portably knowable and compensating only some platforms would make the
+		 * generator's own A/V skew vary per device. The residual screen-vs-speaker
+		 * skew is one physical constant per device, absorbed by a single video trim.
+		 * The model is therefore identical across desktop and mobile browsers.
 		 */
 		const DTMF_ROWS = [697, 770, 852, 941];
 		const DTMF_COLS = [1209, 1336, 1477];
@@ -406,9 +410,7 @@
 		const GUARD_MS = 60;
 		const PAYLOAD_SYMBOLS = 5;
 		const PAYLOAD_BASE = DTMF_ROWS.length * DTMF_COLS.length;
-		const LOOKAHEAD_MS = 3200;
-		const SCHEDULER_TICK_MS = 60;
-		const ANCHOR_TICK_MS = 250;
+		const ANCHOR_SAMPLE_INTERVAL_MS = 250;
 		const ANCHOR_WINDOW = 31;
 		const QR_VERSION = 3;
 		const QR_SIZE = 17 + QR_VERSION * 4;
@@ -458,16 +460,14 @@
 			keepAliveCanvas: null,
 			keepAliveVideo: null,
 			keepAliveStream: null,
-			schedulerTimer: 0,
 			syncTimer: 0,
-			anchorTimer: 0,
-			nextTargetMs: 0,
-			lastScheduledTargetMs: 0,
-			scheduled: new Map(),
+			lastFiredSequence: -1,
+			lastBeatTargetMs: 0,
+			lastBeatDrawSequence: -1,
 			activeAudioNodes: new Set(),
 			mediaHoldElement: null,
 			audioHoldSource: null,
-			recentEvents: [],
+			lastAnchorSampleMs: 0,
 			offsetMs: 0,
 			runOffsetMs: 0,
 			offsetSamples: [],
@@ -475,16 +475,14 @@
 			clockLabel: "local",
 			lastRttMs: 0,
 			lastFrameMs: 0,
+			lastFramePerfMs: 0,
+			frameIntervalMs: 16.7,
 			lastBadgeUpdateMs: 0,
 			lastStatusUpdateMs: 0,
-			/* Timing core: one smoothed performance->context anchor at the speaker. */
+			/* Timing core: one smoothed performance->context submit-clock anchor. */
 			audioAnchor: 0,
 			anchorSamples: [],
 			anchorValid: false,
-			anchorSource: "-",
-			audioLatencySamples: [],
-			displayAudioLatencySeconds: 0,
-			audioTimingLabel: "-",
 			lastAudioSchedule: "-",
 			audioProbeLabel: "pending",
 			audioProbeClass: "warn",
@@ -672,10 +670,7 @@
 			if (!state.running)
 				return;
 			state.runOffsetMs = state.offsetMs;
-			state.nextTargetMs = 0;
-			state.lastScheduledTargetMs = 0;
-			state.scheduled.clear();
-			scheduleDueEvents();
+			state.lastBeatTargetMs = 0;
 		}
 
 		async function syncClock() {
@@ -927,41 +922,26 @@
 			return buffer;
 		}
 
-		function audioOutputLatencySeconds() {
-			const audio = state.audioContext;
-			if (!audio)
-				return 0;
-			return (audio.baseLatency || 0) + (audio.outputLatency || 0);
-		}
-
-		function stableAudioOutputLatencySeconds() {
-			const latency = audioOutputLatencySeconds();
-			if (!Number.isFinite(latency) || latency <= 0)
-				return latency;
-
-			state.audioLatencySamples.push(latency);
-			if (state.audioLatencySamples.length > 21)
-				state.audioLatencySamples.shift();
-
-			const samples = state.audioLatencySamples.slice().sort((a, b) => a - b);
-			const median = samples[Math.floor(samples.length * 0.5)];
-			if (!state.displayAudioLatencySeconds || Math.abs(median - state.displayAudioLatencySeconds) > 0.05)
-				state.displayAudioLatencySeconds = median;
-			return state.displayAudioLatencySeconds;
-		}
-
 		/*
 		 * The single timing primitive. `audioAnchor` is the offset (seconds) such
-		 * that a buffer started at AudioContext time `audioAnchor + perfMs/1000` is
-		 * HEARD at the speaker at performance-clock time `perfMs`. We learn it two
-		 * ways and feed both into one median-smoothed value:
+		 * that a buffer SUBMITTED at AudioContext time `audioAnchor + perfMs/1000`
+		 * leaves the submit clock at performance-clock time `perfMs`:
 		 *
-		 *   output timestamp:  alpha = ts.contextTime - ts.performanceTime/1000
-		 *   latency fallback:  alpha = currentTime - now/1000 - outputLatency
+		 *   alpha = currentTime - now/1000
 		 *
-		 * Both estimate the same physical quantity. Smoothing removes per-cue jitter;
-		 * preferring the output-timestamp source (when present) keeps platforms with
-		 * an unreliable reported latency honest.
+		 * We deliberately do NOT compensate for output (speaker) latency. We can't
+		 * measure it portably -- getOutputTimestamp is desktop-only and the reported
+		 * baseLatency/outputLatency can't be trusted (Bluetooth is wildly under-
+		 * reported) -- and compensating it on only some platforms would make the
+		 * generator's own A/V skew differ per device, which is fatal for a reference.
+		 *
+		 * So we treat audio and video as already in sync at submit time and let them
+		 * emerge with their natural device latencies. The remaining skew is just
+		 *   display_latency - audio_output_latency
+		 * a single physical constant per device, absorbed by the one video trim.
+		 * (For the common internal speaker + internal screen case the two latencies
+		 * partially cancel, so this is usually smaller than compensating either one.)
+		 * Median smoothing only tracks slow clock drift between the two timebases.
 		 */
 		function sampleAudioAnchor() {
 			const audio = state.audioContext;
@@ -969,35 +949,14 @@
 				return;
 
 			const now = performance.now();
-			let alpha = null;
-			let source = "latency";
+			const alpha = audio.currentTime - now / 1000;
 
-			if (typeof audio.getOutputTimestamp === "function") {
-				const ts = audio.getOutputTimestamp();
-				if (ts && Number.isFinite(ts.contextTime) && Number.isFinite(ts.performanceTime) &&
-				    ts.performanceTime > 0 && Math.abs(ts.performanceTime - now) < 2000 &&
-				    Math.abs(ts.contextTime - audio.currentTime) < 2) {
-					alpha = ts.contextTime - ts.performanceTime / 1000;
-					source = "output";
-				}
-			}
-
-			if (alpha === null)
-				alpha = audio.currentTime - now / 1000 - audioOutputLatencySeconds();
-
-			state.anchorSamples.push({ alpha, source });
+			state.anchorSamples.push(alpha);
 			if (state.anchorSamples.length > ANCHOR_WINDOW)
 				state.anchorSamples.shift();
 
-			const preferred = state.anchorSamples.some((sample) => sample.source === "output")
-				? "output"
-				: "latency";
-			const pool = state.anchorSamples
-				.filter((sample) => sample.source === preferred)
-				.map((sample) => sample.alpha)
-				.sort((a, b) => a - b);
+			const pool = state.anchorSamples.slice().sort((a, b) => a - b);
 			state.audioAnchor = pool[Math.floor(pool.length / 2)];
-			state.anchorSource = preferred;
 			state.anchorValid = true;
 		}
 
@@ -1014,6 +973,11 @@
 				const AudioCtor = window.AudioContext || window.webkitAudioContext;
 				if (!AudioCtor)
 					throw new Error("Web Audio is not available");
+				/* Intent: smallest, most stable output latency. We no longer read the
+				 * reported latency value, so this hint is purely about keeping the real
+				 * speaker latency low (less for the video trim to absorb) and steady.
+				 * No forced sampleRate -- match the device's rate to avoid resampling,
+				 * which would add its own latency; the packet adapts to audio.sampleRate. */
 				state.audioContext = new AudioCtor({ latencyHint: "interactive" });
 				state.masterGain = state.audioContext.createGain();
 				state.masterGain.connect(state.audioContext.destination);
@@ -1205,12 +1169,8 @@
 				state.runToken++;
 				state.starting = false;
 				state.running = false;
-				window.clearInterval(state.schedulerTimer);
 				window.clearInterval(state.syncTimer);
-				window.clearInterval(state.anchorTimer);
-				state.schedulerTimer = 0;
 				state.syncTimer = 0;
-				state.anchorTimer = 0;
 				stopStartupAudioHold();
 				state.lastAudioSchedule = error.message || "start failed";
 				el.startBtn.textContent = "Start";
@@ -1316,17 +1276,35 @@
 			return audio;
 		}
 
-		function scheduleAudioCue(targetMs, sequence) {
+		/*
+		 * Realtime audio fire. There is no schedule queue: every animation frame we
+		 * ask "is the next beat due to start?" and, if so, fire it once. Like a game
+		 * telegraphing an attack -- start the windup the moment it must begin so the
+		 * hit lands on the beat.
+		 *
+		 * The buffer-start context time is the SAME sample-accurate value placement
+		 * uses, so the scheduling deadline is just "is this start time still in the
+		 * future?" -- no latency guess anywhere. source.start(when) is sample-exact;
+		 * the marker center lands on the beat regardless of how early we call it.
+		 */
+		function audioStartContextTime(targetMs) {
+			/* The marker center must be submitted at targetMs; the buffer's first
+			 * sample is therefore submitted (preroll + half marker) earlier. The anchor
+			 * maps that submit instant to a context start time. */
+			const centerPerfMs = remoteMsToPerfMs(targetMs);
+			const startSubmitPerfMs = centerPerfMs - AUDIO_PREROLL_MS - MARKER_MS * 0.5;
+			return state.audioAnchor + startSubmitPerfMs / 1000;
+		}
+
+		function fireAudioBeat(targetMs, sequence) {
 			if (!el.audioEnabled.checked || !state.audioContext || !state.anchorValid)
 				return false;
 
-			/* Place the marker center so it is HEARD at targetMs. The buffer starts
-			 * (preroll + half marker) earlier; the anchor folds in output latency. */
-			const centerPerfMs = remoteMsToPerfMs(targetMs);
-			const startHeardPerfMs = centerPerfMs - AUDIO_PREROLL_MS - MARKER_MS * 0.5;
-			const when = state.audioAnchor + startHeardPerfMs / 1000;
-			if (when < state.audioContext.currentTime + 0.05)
+			const when = audioStartContextTime(targetMs);
+			if (when < state.audioContext.currentTime) {
+				state.lastAudioSchedule = `missed beat seq=${sequence & 0xff}`;
 				return false;
+			}
 
 			const buffer = makePacketBuffer(sequence);
 			const source = state.audioContext.createBufferSource();
@@ -1334,44 +1312,50 @@
 			source.connect(state.masterGain);
 			retainAudioNode(source);
 			source.start(when);
-			state.audioTimingLabel = `speaker anchor (${state.anchorSource})`;
-			state.lastAudioSchedule = `${state.anchorSource} seq=${sequence & 0xff} lead=${fmtLead(targetMs - remoteNowMs())}`;
-			log(`audio ${state.lastAudioSchedule}`);
+			state.lastAudioSchedule = `seq=${sequence & 0xff} lead=${fmtLead(targetMs - remoteNowMs())}`;
 			return true;
 		}
 
-		function scheduleDueEvents() {
-			if (!state.running)
+		/* Called every frame from the draw loop -- the single heartbeat. Each beat is
+		 * fired at the LAST RESPONSIBLE MOMENT: the last tick before its buffer-start
+		 * context time crosses currentTime. The only headroom is one measured frame,
+		 * since the next tick would land after the deadline. No fixed lookahead and no
+		 * latency term -- the audio reacts to the clock. */
+		function tickAudio(now) {
+			if (!state.running || !el.audioEnabled.checked || !state.anchorValid)
 				return;
 
-			const now = remoteNowMs();
+			const audio = state.audioContext;
 			const period = Math.max(1000, readNumber(el.periodMs, 3000));
-			const lead = Math.max(500, state.leadMs);
-			if (!state.nextTargetMs || state.nextTargetMs < now - period)
-				state.nextTargetMs = nextBoundary(now, lead, period);
+			const headroom = state.frameIntervalMs / 1000;
 
-			while (state.nextTargetMs <= now + LOOKAHEAD_MS) {
-				if (!state.scheduled.has(state.nextTargetMs)) {
-					const sequence = sequenceForTarget(state.nextTargetMs);
-					const audioScheduled = scheduleAudioCue(state.nextTargetMs, sequence);
-					if (!el.audioEnabled.checked || audioScheduled) {
-						state.scheduled.set(state.nextTargetMs, { targetMs: state.nextTargetMs, sequence });
-						log(`cue seq=${sequence & 0xff} target=${fmtTime(state.nextTargetMs)} utc_ms=${Math.round(state.nextTargetMs)}`);
-					}
-					else {
-						state.lastAudioSchedule = `skipped late seq=${sequence & 0xff}`;
-						log(state.lastAudioSchedule);
-					}
+			/* The target is the next beat strictly after the one we last fired;
+			 * on the first beat (or after a stall) start from the boundary at `now`. */
+			let target = state.lastBeatTargetMs
+				? state.lastBeatTargetMs + period
+				: Math.ceil(now / period) * period;
+			/* Advance past any beat whose start time is already in the past. If the
+			 * beat instant itself is still ahead, that is a real miss (report it);
+			 * otherwise we are just seeking past startup. */
+			while (audioStartContextTime(target) < audio.currentTime) {
+				if (now < target && target !== state.lastBeatTargetMs) {
+					state.lastAudioSchedule = `missed beat seq=${sequenceForTarget(target) & 0xff}`;
+					log(state.lastAudioSchedule);
 				}
-				state.lastScheduledTargetMs = state.nextTargetMs;
-				state.nextTargetMs += period;
+				state.lastBeatTargetMs = target;
+				target += period;
 			}
 
-			for (const key of [...state.scheduled.keys()]) {
-				if (key < now - 5000)
-					state.scheduled.delete(key);
+			/* Hold until this beat's start time is within one frame of currentTime. */
+			if (audioStartContextTime(target) - audio.currentTime > headroom)
+				return;
+
+			const sequence = sequenceForTarget(target);
+			if (fireAudioBeat(target, sequence)) {
+				state.lastBeatTargetMs = target;
+				state.lastFiredSequence = sequence;
+				log(`beat seq=${sequence & 0xff} target=${fmtTime(target)} utc_ms=${Math.round(target)}`);
 			}
-			updateStatus();
 		}
 
 		function gfTables() {
@@ -1907,18 +1891,11 @@
 			ctx.restore();
 		}
 
-		function nearestEvent(now) {
-			let best = null;
-			let bestAbs = Infinity;
-			for (const event of state.scheduled.values()) {
-				const delta = event.targetMs - now;
-				const abs = Math.abs(delta);
-				if (abs < bestAbs) {
-					best = event;
-					bestAbs = abs;
-				}
-			}
-			return best;
+		/* The nearest beat is pure arithmetic on the clock -- no queue to scan.
+		 * Beats land on every multiple of period; round to the closest one. */
+		function beatNear(clockMs, period) {
+			const targetMs = Math.round(clockMs / period) * period;
+			return { targetMs, sequence: sequenceForTarget(targetMs) };
 		}
 
 		function drawStage() {
@@ -1935,28 +1912,39 @@
 
 			const realNow = remoteNowMs();
 			state.lastFrameMs = realNow;
+
+			/* Measure our own tick cadence. This loop gets one shot per frame, so the
+			 * only honest headroom on a deadline is the gap until the next frame --
+			 * measured here, not a chosen constant. EMA so one stutter doesn't spike it. */
+			const perfNow = performance.now();
+			if (state.lastFramePerfMs) {
+				const dt = perfNow - state.lastFramePerfMs;
+				if (dt > 0 && dt < 200)
+					state.frameIntervalMs = state.frameIntervalMs * 0.9 + dt * 0.1;
+			}
+			state.lastFramePerfMs = perfNow;
+
+			/* Single heartbeat: resample the submit-clock anchor and fire the next
+			 * audio beat if its start time just came due, then draw video for now. */
+			if (state.running) {
+				if (performance.now() - state.lastAnchorSampleMs >= ANCHOR_SAMPLE_INTERVAL_MS) {
+					sampleAudioAnchor();
+					state.lastAnchorSampleMs = performance.now();
+				}
+				tickAudio(realNow);
+				updateStatusThrottled();
+			}
+
 			/* Video flips at the same wall instant as audio, advanced by the per-device
 			 * display trim so the photons (not the draw call) land on the target. */
 			const videoNow = realNow + state.videoTrimMs;
 			const period = Math.max(1000, readNumber(el.periodMs, 3000));
 			const visualMs = Math.max(80, state.visualMs);
-			const event = nearestEvent(realNow);
-			const delta = event ? videoNow - event.targetMs : Infinity;
+			const event = beatNear(videoNow, period);
+			const delta = videoNow - event.targetMs;
 			const phaseMs = visualMs * 0.5;
 			const active = Math.abs(delta) <= phaseMs;
-			const qrVisible = event && delta < -phaseMs && delta >= -QR_DISPLAY_LEAD_MS;
-
-			const nextTargetMs = nextBoundary(realNow, state.leadMs, period);
-			const next = event || { targetMs: nextTargetMs, sequence: sequenceForTarget(nextTargetMs) };
-			const upcomingTargetMs = nextBoundary(realNow, 0, period);
-			const upcoming = { targetMs: upcomingTargetMs, sequence: sequenceForTarget(upcomingTargetMs) };
-			const progressEvent = state.running
-				? event && Math.abs(realNow - event.targetMs) <= AUDIO_SCOPE_WINDOW_MS
-					? event
-					: event && event.targetMs > realNow
-						? event
-						: upcoming
-				: null;
+			const qrVisible = delta < -phaseMs && delta >= -QR_DISPLAY_LEAD_MS;
 			const square = markerSquare(w, h);
 
 			if (active) {
@@ -1971,8 +1959,8 @@
 			}
 
 			if (shouldDrawSyncProgress())
-				drawSyncProgress(ctx, square, progressEvent, realNow, dpr);
-			updateBadges(next, realNow);
+				drawSyncProgress(ctx, square, event, realNow, dpr);
+			updateBadges(event, realNow);
 			requestAnimationFrame(drawStage);
 		}
 
@@ -1982,7 +1970,7 @@
 			state.lastBadgeUpdateMs = performance.now();
 			el.clockBadge.textContent = state.clockLabel;
 			el.nextBadge.textContent = next && Number.isFinite(next.targetMs) ? `${(next.targetMs - now).toFixed(0)} ms` : "-";
-			el.anchorBadge.textContent = state.anchorValid ? `${state.anchorSource} ${state.videoTrimMs >= 0 ? "+" : ""}${Math.round(state.videoTrimMs)}` : "-";
+			el.anchorBadge.textContent = state.anchorValid ? `video ${state.videoTrimMs >= 0 ? "+" : ""}${Math.round(state.videoTrimMs)}` : "-";
 			el.wakeBadge.textContent = state.wakeLock ? "locked" : state.keepAliveVideo && !state.keepAliveVideo.paused ? "media" : "idle";
 		}
 
@@ -2009,17 +1997,11 @@
 				el.wakeStatus.className = "";
 			}
 
-			if (state.anchorValid) {
-				el.audioAnchor.textContent = `${state.anchorSource} · video ${fmtSignedProgressMs(state.videoTrimMs)}`;
-				el.audioAnchor.className = state.anchorSource === "output" ? "ok" : "warn";
-			}
-			else {
-				el.audioAnchor.textContent = `video ${fmtSignedProgressMs(state.videoTrimMs)}`;
-				el.audioAnchor.className = "";
-			}
+			el.audioAnchor.textContent = `submit-synced · video ${fmtSignedProgressMs(state.videoTrimMs)}`;
+			el.audioAnchor.className = state.anchorValid ? "ok" : "";
 
 			if (state.audioContext) {
-				el.audioLatency.textContent = `${fmtMs(stableAudioOutputLatencySeconds() * 1000, 2)}`;
+				el.audioLatency.textContent = "not compensated (use trim)";
 				el.audioState.textContent = `${state.audioContext.state} ${state.lastAudioSchedule}`;
 				el.audioState.className = state.audioContext.state === "running" ? "ok" : "warn";
 			}
@@ -2053,7 +2035,7 @@
 			if (token !== state.runToken || !state.starting)
 				return;
 
-			/* Seed the anchor immediately so the first lookahead window schedules. */
+			/* Seed the anchor immediately so the first beat can fire. */
 			state.anchorSamples = [];
 			state.anchorValid = false;
 			sampleAudioAnchor();
@@ -2080,20 +2062,16 @@
 
 			state.starting = false;
 			state.running = true;
-			state.nextTargetMs = 0;
-			state.lastScheduledTargetMs = 0;
-			state.audioLatencySamples = [];
-			state.displayAudioLatencySeconds = 0;
-			state.audioTimingLabel = "-";
+			state.lastBeatTargetMs = 0;
+			state.lastFiredSequence = -1;
+			state.lastAnchorSampleMs = 0;
 			state.runOffsetMs = state.offsetMs;
-			state.scheduled.clear();
 			sampleAudioAnchor();
 			updateStatus();
 			updateRunClass();
 			updateFullscreenClass();
-			scheduleDueEvents();
-			state.schedulerTimer = window.setInterval(scheduleDueEvents, SCHEDULER_TICK_MS);
-			state.anchorTimer = window.setInterval(sampleAudioAnchor, ANCHOR_TICK_MS);
+			/* No scheduler timer: the rAF draw loop is the single heartbeat that
+			 * samples the anchor and fires audio beats in realtime. */
 			state.syncTimer = window.setInterval(() => {
 				if (state.running && state.autoSync && useRemoteTime()) {
 					syncClock().catch((error) => log(`sync failed: ${error.message}`));
@@ -2105,19 +2083,13 @@
 			state.runToken++;
 			state.starting = false;
 			state.running = false;
-			window.clearInterval(state.schedulerTimer);
 			window.clearInterval(state.syncTimer);
-			window.clearInterval(state.anchorTimer);
-			state.schedulerTimer = 0;
 			state.syncTimer = 0;
-			state.anchorTimer = 0;
 			state.anchorSamples = [];
 			state.anchorValid = false;
-			state.audioLatencySamples = [];
-			state.displayAudioLatencySeconds = 0;
-			state.audioTimingLabel = "-";
+			state.lastBeatTargetMs = 0;
+			state.lastFiredSequence = -1;
 			state.lastAudioSchedule = "-";
-			state.scheduled.clear();
 			stopScheduledAudioNodes();
 			stopStartupAudioHold();
 			el.startBtn.textContent = "Start";
