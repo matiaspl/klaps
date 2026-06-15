@@ -477,6 +477,8 @@
 			lastFrameMs: 0,
 			lastFramePerfMs: 0,
 			frameIntervalMs: 16.7,
+			lastAudioClockSec: 0,
+			audioClockStepMs: 0,
 			lastBadgeUpdateMs: 0,
 			lastStatusUpdateMs: 0,
 			/* Timing core: one smoothed performance->context submit-clock anchor. */
@@ -1316,28 +1318,53 @@
 			return true;
 		}
 
-		/* Called every frame from the draw loop -- the single heartbeat. Each beat is
-		 * fired at the LAST RESPONSIBLE MOMENT: the last tick before its buffer-start
-		 * context time crosses currentTime. The only headroom is one measured frame,
-		 * since the next tick would land after the deadline. No fixed lookahead and no
-		 * latency term -- the audio reacts to the clock. */
+		/* Track the AudioContext clock's observation granularity: the largest jump
+		 * currentTime makes between frames. On mobile this is coarse (80 ms render
+		 * blocks, frozen ~10 frames then leaping 80-160 ms) -- but it is only how often
+		 * the main thread SEES the clock, not the real scheduling resolution. We use it
+		 * solely to pad the fire lead so the final safety check never trips on a stale
+		 * read; the fire DECISION itself runs on the fine perf clock (see tickAudio). */
+		function trackAudioClockStep() {
+			const clockSec = state.audioContext.currentTime;
+			if (state.lastAudioClockSec) {
+				const stepMs = (clockSec - state.lastAudioClockSec) * 1000;
+				/* Ratchet up instantly, relax very slowly: hold the observed max so a
+				 * run of frozen frames can't drop it below the next leap, but recover
+				 * (~12 s) if the device moves to a lower-latency sink. */
+				if (stepMs > state.audioClockStepMs)
+					state.audioClockStepMs = stepMs;
+				else if (stepMs > 0)
+					state.audioClockStepMs = state.audioClockStepMs * 0.999 + stepMs * 0.001;
+			}
+			state.lastAudioClockSec = clockSec;
+		}
+
+		/* Called every frame from the draw loop -- the single heartbeat. The fire
+		 * decision runs entirely on the smooth perf clock (`now`), NOT the 80 ms audio
+		 * clock: each beat's buffer must START (in the perf timebase) at
+		 * target - preroll - half, so we fire on the first frame within one frame of
+		 * that instant. The lead is padded by one audio-clock quantum so the buffer's
+		 * context start time is still ahead of a possibly-stale currentTime when we
+		 * call start(). Firing early is free -- start(when) is sample-accurate. */
 		function tickAudio(now) {
 			if (!state.running || !el.audioEnabled.checked || !state.anchorValid)
 				return;
 
-			const audio = state.audioContext;
+			trackAudioClockStep();
 			const period = Math.max(1000, readNumber(el.periodMs, 3000));
-			const headroom = state.frameIntervalMs / 1000;
+			/* Perf-clock instant the buffer must begin, minus a quantum+frame so the
+			 * sample-accurate start time stays ahead of the coarsely-observed clock. */
+			const leadMs = AUDIO_PREROLL_MS + MARKER_MS * 0.5 + state.audioClockStepMs + state.frameIntervalMs;
 
 			/* The target is the next beat strictly after the one we last fired;
 			 * on the first beat (or after a stall) start from the boundary at `now`. */
 			let target = state.lastBeatTargetMs
 				? state.lastBeatTargetMs + period
 				: Math.ceil(now / period) * period;
-			/* Advance past any beat whose start time is already in the past. If the
-			 * beat instant itself is still ahead, that is a real miss (report it);
-			 * otherwise we are just seeking past startup. */
-			while (audioStartContextTime(target) < audio.currentTime) {
+			/* Advance past any beat we can no longer start in time. A beat is only a
+			 * real miss if its own instant is still ahead (a genuine stall); otherwise
+			 * we are just seeking past startup. */
+			while (now > target - AUDIO_PREROLL_MS - MARKER_MS * 0.5) {
 				if (now < target && target !== state.lastBeatTargetMs) {
 					state.lastAudioSchedule = `missed beat seq=${sequenceForTarget(target) & 0xff}`;
 					log(state.lastAudioSchedule);
@@ -1346,8 +1373,8 @@
 				target += period;
 			}
 
-			/* Hold until this beat's start time is within one frame of currentTime. */
-			if (audioStartContextTime(target) - audio.currentTime > headroom)
+			/* Hold on the smooth perf clock until this beat's lead window opens. */
+			if (now < target - leadMs)
 				return;
 
 			const sequence = sequenceForTarget(target);
@@ -2001,7 +2028,9 @@
 			el.audioAnchor.className = state.anchorValid ? "ok" : "";
 
 			if (state.audioContext) {
-				el.audioLatency.textContent = "not compensated (use trim)";
+				el.audioLatency.textContent = state.audioClockStepMs > 0
+					? `clock step ${Math.round(state.audioClockStepMs)} ms · not compensated`
+					: "not compensated (use trim)";
 				el.audioState.textContent = `${state.audioContext.state} ${state.lastAudioSchedule}`;
 				el.audioState.className = state.audioContext.state === "running" ? "ok" : "warn";
 			}
@@ -2065,6 +2094,8 @@
 			state.lastBeatTargetMs = 0;
 			state.lastFiredSequence = -1;
 			state.lastAnchorSampleMs = 0;
+			state.lastAudioClockSec = 0;
+			state.audioClockStepMs = 0;
 			state.runOffsetMs = state.offsetMs;
 			sampleAudioAnchor();
 			updateStatus();
