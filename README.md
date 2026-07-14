@@ -8,6 +8,13 @@ It's based on solid grounds of Norihiro's [Audio Video Sync Dock](https://obspro
 
 Programming work done by Codex.
 
+OBS Studio 31 or newer is required. The dock analyzes the main Program video
+and audio Track 1 through a private pair of no-op OBS encoders. These encoders
+run alongside streaming and recording outputs, but do not compress or write
+media. Using OBS encoder PTS and compositor CTS keeps the measurement on the
+actual mixed output timeline instead of trusting timestamps supplied by an
+individual source.
+
 ## Motivation behind the fork
 
 The v2 AV offset workflow for repeatable relative AV sync checks
@@ -73,6 +80,10 @@ with a camera and microphone.
 2. Play the generated clip on the device under test.
 3. Capture the device with the camera and microphone that OBS will use.
 4. Open the Audio Video Sync dock, select `AV Offset Clip`, and start measuring.
+
+The analyzer always follows the main Program canvas and audio Track 1. It does
+not need to be added to a scene or attached to a source, and it can remain
+active while OBS is streaming or recording.
 
 To verify the reference file itself without OBS media-source scheduling in the
 path, run:

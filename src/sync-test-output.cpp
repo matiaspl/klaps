@@ -52,11 +52,12 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #define V2_DTMF_COLS 3
 #define V2_PAYLOAD_BASE (V2_DTMF_ROWS * V2_DTMF_COLS)
 #define V2_CORRELATION_STEP 4
-#define V2_CORRELATION_THRESHOLD 0.42f
+#define V2_CORRELATION_THRESHOLD 0.34f
 #define V2_PAYLOAD_SEARCH_MS 5
 #define V2_DUPLICATE_WINDOW_MS 500
 #define V2_PAIR_WINDOW_NS 10000000000ULL
 #define V2_PACKET_SAMPLES_MAX_SECONDS 4
+#define ANALYZER_AUDIO_FRAME_SIZE 1024
 
 /* There are several reason to limit the width and the height.
  * - Since a square of 3/8 QR-code-length is calculated using uint32_t,
@@ -122,9 +123,11 @@ struct sync_test_output
 {
 	obs_output_t *context;
 	uint32_t detect_mode = SYNC_TEST_DETECT_LEGACY;
+	bool packet_callback_registered = false;
 
 	/* Configuration from OBS output context */
 	uint32_t video_width = 0, video_height = 0;
+	uint32_t video_fps_num = 0, video_fps_den = 0;
 	uint32_t video_pixelsize = 0;
 	uint32_t video_pixeloffset = 0;
 	uint8_t (*video_get_intensity)(const uint8_t *data) = nullptr;
@@ -133,8 +136,6 @@ struct sync_test_output
 	size_t audio_channels = 0;
 
 	/* Sync pattern detection from video */
-	uint64_t start_ts = 0;
-
 	struct quirc *qr = nullptr;
 	uint32_t qr_step;
 	struct corner_type qr_corners[N_CORNERS];
@@ -142,6 +143,7 @@ struct sync_test_output
 
 	int64_t video_level_prev = 0;
 	uint64_t video_level_prev_ts = 0;
+	uint64_t video_marker_min_ts = 0;
 	uint64_t video_marker_max_ts = 0;
 
 	/* Sync pattern detection from audio */
@@ -173,6 +175,11 @@ struct sync_test_output
 	uint32_t f_last = 0;
 	uint32_t c_last = 0;
 
+	/* Encoder PTS to OBS compositor clock mapping */
+	std::mutex clock_mutex;
+	bool cts_origin_valid = false;
+	uint64_t cts_origin_ns = 0;
+
 	~sync_test_output()
 	{
 		if (qr)
@@ -181,6 +188,9 @@ struct sync_test_output
 };
 
 static void video_marker_found(struct sync_test_output *st, uint64_t timestamp, float score);
+static bool st_create_analyzer_encoders(struct sync_test_output *st);
+static void st_packet_timing(obs_output_t *output, struct encoder_packet *packet,
+			     struct encoder_packet_time *packet_time, void *param);
 
 static const char *st_get_name(void *)
 {
@@ -202,6 +212,10 @@ static void *st_create(obs_data_t *settings, obs_output_t *output)
 	st->context = output;
 	if (settings)
 		st->detect_mode = (uint32_t)obs_data_get_int(settings, "detect_mode");
+	if (!st_create_analyzer_encoders(st)) {
+		delete st;
+		return nullptr;
+	}
 
 	return st;
 }
@@ -209,6 +223,10 @@ static void *st_create(obs_data_t *settings, obs_output_t *output)
 static void st_destroy(void *data)
 {
 	auto *st = (struct sync_test_output *)data;
+	if (st->packet_callback_registered)
+		obs_output_remove_packet_callback(st->context, st_packet_timing, st);
+	obs_output_set_video_encoder(st->context, nullptr);
+	obs_output_set_audio_encoder(st->context, nullptr, 0);
 	delete st;
 }
 
@@ -234,7 +252,7 @@ static uint64_t system_epoch_ns()
 	return (uint64_t)duration_cast<nanoseconds>(system_clock::now().time_since_epoch()).count();
 }
 
-static uint64_t obs_timestamp_to_epoch_ns(uint64_t timestamp)
+static uint64_t obs_clock_to_epoch_ns(uint64_t timestamp)
 {
 	const uint64_t now_epoch_ns = system_epoch_ns();
 	const uint64_t now_obs_ns = os_gettime_ns();
@@ -247,14 +265,22 @@ static uint64_t obs_timestamp_to_epoch_ns(uint64_t timestamp)
 	return now_epoch_ns + (timestamp - now_obs_ns);
 }
 
-static bool glass_to_glass_from_qr(const struct st_qr_data &qr_data, uint64_t timestamp, uint64_t *source_epoch_ns,
-				   uint64_t *video_epoch_ns, int64_t *glass_to_glass_ns)
+static bool glass_to_glass_from_qr(struct sync_test_output *st, const struct st_qr_data &qr_data, uint64_t timestamp,
+				   uint64_t *source_epoch_ns, uint64_t *video_epoch_ns, int64_t *glass_to_glass_ns)
 {
 	if (!qr_data.has_ntp_ms)
 		return false;
 
+	uint64_t cts_origin_ns;
+	{
+		std::lock_guard<std::mutex> lock(st->clock_mutex);
+		if (!st->cts_origin_valid)
+			return false;
+		cts_origin_ns = st->cts_origin_ns;
+	}
+
 	*source_epoch_ns = qr_data.ntp_ms * 1000000ULL;
-	*video_epoch_ns = obs_timestamp_to_epoch_ns(timestamp);
+	*video_epoch_ns = obs_clock_to_epoch_ns(cts_origin_ns + timestamp);
 	*glass_to_glass_ns = (int64_t)*video_epoch_ns - (int64_t)*source_epoch_ns;
 	return true;
 }
@@ -314,26 +340,31 @@ static bool st_start(void *data)
 {
 	auto *st = (struct sync_test_output *)data;
 
-	const video_t *video = obs_output_video(st->context);
+	const video_t *video = obs_get_video();
 	if (!video) {
-		blog(LOG_ERROR, "no video");
+		blog(LOG_ERROR, "Program video is unavailable");
 		return false;
 	}
-	const audio_t *audio = obs_output_audio(st->context);
+	const audio_t *audio = obs_get_audio();
 	if (!audio) {
-		blog(LOG_ERROR, "no audio");
+		blog(LOG_ERROR, "OBS audio is unavailable");
 		return false;
 	}
 
 	st->video_width = video_output_get_width(video);
 	st->video_height = video_output_get_height(video);
+	const struct video_output_info *video_info = video_output_get_info(video);
+	st->video_fps_num = video_info->fps_num;
+	st->video_fps_den = video_info->fps_den;
 	if (st->video_width > MAX_WIDTH_HEIGHT || st->video_height > MAX_WIDTH_HEIGHT) {
 		blog(LOG_ERROR, "Requested size %ux%u exceeds maximum size %ux%u", st->video_width, st->video_height,
 		     MAX_WIDTH_HEIGHT, MAX_WIDTH_HEIGHT);
 		return false;
 	}
 
-	enum video_format video_format = video_output_get_format(video);
+	/* The software analyzer encoder requests I420 regardless of the Program
+	 * canvas format, so the detector always receives an 8-bit luma plane. */
+	enum video_format video_format = VIDEO_FORMAT_I420;
 	switch (video_format) {
 	case VIDEO_FORMAT_I420:
 	case VIDEO_FORMAT_NV12:
@@ -397,7 +428,6 @@ static bool st_start(void *data)
 
 	st->audio_sample_rate = audio_output_get_sample_rate(audio);
 	st->audio_channels = audio_output_get_channels(audio);
-	st->start_ts = 0;
 	st->audio_v2_marker = make_audio_v2_marker(st->audio_sample_rate);
 	st->audio_v2_raw_buffer.clear();
 	st->audio_v2_raw_ts_buffer.clear();
@@ -409,8 +439,28 @@ static bool st_start(void *data)
 	st->audio_v2_last_marker_ts = 0;
 	st->audio_v2_marker_finder = peak_finder();
 	st->audio_v2_marker_finder.dumping_range = 1000000000ULL;
+	{
+		std::lock_guard<std::mutex> lock(st->clock_mutex);
+		st->cts_origin_valid = false;
+		st->cts_origin_ns = 0;
+	}
 
-	obs_output_begin_data_capture(st->context, OBS_OUTPUT_VIDEO | OBS_OUTPUT_AUDIO);
+	if (!obs_output_initialize_encoders(st->context, 0)) {
+		blog(LOG_ERROR, "Failed to initialize analyzer encoders");
+		return false;
+	}
+
+	obs_output_add_packet_callback(st->context, st_packet_timing, st);
+	st->packet_callback_registered = true;
+	if (!obs_output_begin_data_capture(st->context, 0)) {
+		obs_output_remove_packet_callback(st->context, st_packet_timing, st);
+		st->packet_callback_registered = false;
+		blog(LOG_ERROR, "Failed to start analyzer data capture");
+		return false;
+	}
+
+	blog(LOG_INFO, "Analyzer started on Program video %ux%u at %u/%u FPS and audio Track 1 at %u Hz",
+	     st->video_width, st->video_height, st->video_fps_num, st->video_fps_den, st->audio_sample_rate);
 
 	return true;
 }
@@ -419,6 +469,10 @@ static void st_stop(void *data, uint64_t)
 {
 	auto *st = (struct sync_test_output *)data;
 
+	if (st->packet_callback_registered) {
+		obs_output_remove_packet_callback(st->context, st_packet_timing, st);
+		st->packet_callback_registered = false;
+	}
 	obs_output_end_data_capture(st->context);
 }
 
@@ -550,7 +604,7 @@ static void st_raw_video_qrcode_decode(struct sync_test_output *st, struct video
 			st->qr_corners[j].y = code.corners[j].y * st->qr_step;
 		}
 
-		signal_qrcode_found(st->context, frame->timestamp - st->start_ts, st->qr_corners);
+		signal_qrcode_found(st->context, frame->timestamp, st->qr_corners);
 
 		adjust_corners(st->qr_corners);
 
@@ -561,6 +615,10 @@ static void st_raw_video_qrcode_decode(struct sync_test_output *st, struct video
 			st->q_ms = st->qr_data.q_ms;
 		}
 
+		if (st->qr_data.protocol >= 2 && st->qr_data.q_ms > 0)
+			st->video_marker_min_ts = frame->timestamp + ((uint64_t)st->qr_data.q_ms * 1000000ULL) / 2;
+		else
+			st->video_marker_min_ts = 0;
 		st->video_marker_max_ts = frame->timestamp + st->qr_data.q_ms * 3 * 1000000;
 		st->video_level_prev = 0;
 	}
@@ -571,6 +629,10 @@ static void st_raw_video_find_marker(struct sync_test_output *st, struct video_d
 	int64_t sum = 0;
 
 	if (frame->timestamp > st->video_marker_max_ts) {
+		st->video_level_prev = 0;
+		return;
+	}
+	if (st->qr_data.protocol >= 2 && frame->timestamp < st->video_marker_min_ts) {
 		st->video_level_prev = 0;
 		return;
 	}
@@ -616,12 +678,23 @@ static void st_raw_video_find_marker(struct sync_test_output *st, struct video_d
 		}
 	}
 
-	// blog(LOG_INFO, "st_raw_video-plot: %.03f %f", (frame->timestamp - st->start_ts) * 1e-9, (double)sum / (255.0 * M_PI * sq(st->qr_corners[0].r)));
+	// blog(LOG_INFO, "st_raw_video-plot: %.03f %f", frame->timestamp * 1e-9, (double)sum / (255.0 * M_PI * sq(st->qr_corners[0].r)));
 
 	if (st->qr_data.valid && st->video_level_prev < 0 && sum >= 0) {
-		/* Calculate the time half frame later than the zero-cross of `sum`. */
 		uint64_t t = frame->timestamp - st->video_level_prev_ts;
-		uint64_t add = util_mul_div64(t, sum - st->video_level_prev * 3, (sum - st->video_level_prev) * 2);
+		uint64_t add;
+		if (st->qr_data.protocol >= 2) {
+			/* v2 polarity-step: report the linear zero-cross. The audio side
+			 * reports the sample-accurate marker-center, so video must use the
+			 * same "requested event time" semantic; the +T/2 below biases v2
+			 * by half a frame. */
+			const int64_t denom = sum - st->video_level_prev;
+			add = denom > 0 ? util_mul_div64(t, (uint64_t)(-st->video_level_prev), (uint64_t)denom) : t / 2;
+		}
+		else {
+			/* v1 single-frame pulse: the time half frame later than the zero-cross. */
+			add = util_mul_div64(t, sum - st->video_level_prev * 3, (sum - st->video_level_prev) * 2);
+		}
 		video_marker_found(st, st->video_level_prev_ts + add, (float)(sum - st->video_level_prev));
 	}
 	st->video_level_prev = sum;
@@ -786,14 +859,14 @@ static void video_marker_found(struct sync_test_output *st, uint64_t timestamp, 
 	auto *sh = obs_output_get_signal_handler(st->context);
 
 	struct video_marker_found_s data;
-	data.timestamp = timestamp - st->start_ts;
+	data.timestamp = timestamp;
 	data.score = score;
 	data.protocol = st->qr_data.protocol;
 	data.sequence = st->qr_data.sequence;
 	data.glass_to_glass_ns = 0;
 	data.source_epoch_ns = 0;
 	data.video_epoch_ns = 0;
-	data.has_glass_to_glass = glass_to_glass_from_qr(st->qr_data, timestamp, &data.source_epoch_ns,
+	data.has_glass_to_glass = glass_to_glass_from_qr(st, st->qr_data, timestamp, &data.source_epoch_ns,
 							 &data.video_epoch_ns, &data.glass_to_glass_ns);
 	data.qr_data = st->qr_data;
 
@@ -814,9 +887,6 @@ static void st_raw_video(void *data, struct video_data *frame)
 
 	if (!st->video_pixelsize)
 		return;
-
-	if (!st->start_ts)
-		st->start_ts = frame->timestamp;
 
 	st_raw_video_qrcode_decode(st, frame);
 	st_raw_video_find_marker(st, frame);
@@ -1134,7 +1204,7 @@ static void audio_v2_signal_marker(struct sync_test_output *st, uint32_t sequenc
 	auto *sh = obs_output_get_signal_handler(st->context);
 
 	struct audio_marker_found_s data;
-	data.timestamp = timestamp - st->start_ts;
+	data.timestamp = timestamp;
 	data.index = (int)(sequence & 0xFF);
 	data.score = score;
 	data.index_max = 0;
@@ -1272,7 +1342,7 @@ static inline void st_raw_audio_decode_data(struct sync_test_output *st, std::co
 	auto *sh = obs_output_get_signal_handler(st->context);
 
 	struct audio_marker_found_s data;
-	data.timestamp = ts - st->start_ts;
+	data.timestamp = ts;
 	data.index = index >> 4;
 	data.score = 0.0f;
 	data.index_max = identify_audio_index_max(st, index >> 4);
@@ -1282,7 +1352,7 @@ static inline void st_raw_audio_decode_data(struct sync_test_output *st, std::co
 	calldata_set_ptr(&cd, "data", &data);
 	signal_handler_signal(sh, "audio_marker_found", &cd);
 
-	sync_index_found(st, index >> 4, ts - st->start_ts, false, data.index_max);
+	sync_index_found(st, index >> 4, ts, false, data.index_max);
 }
 
 static inline void st_raw_audio_test_preamble(struct sync_test_output *st, uint64_t ts, float v0)
@@ -1304,7 +1374,7 @@ static inline void st_raw_audio_test_preamble(struct sync_test_output *st, uint6
 
 	UNUSED_PARAMETER(v0);
 	// auto dbg = int16_to_complex(st->audio_buffer.sum(1) - s0);
-	// blog(LOG_INFO, "st_raw_audio-plot: %.05f %f %f %f %f", (ts - st->start_ts) * 1e-9, v0, det, dbg.real(), dbg.imag());
+	// blog(LOG_INFO, "st_raw_audio-plot: %.05f %f %f %f %f", ts * 1e-9, v0, det, dbg.real(), dbg.imag());
 
 	if (st->audio_marker_finder.append(det, ts, symbol_ns * 12)) {
 		auto s12 = st->audio_buffer.sum(buffer_length * 12 / N_SYMBOL_BUFFER);
@@ -1323,9 +1393,6 @@ static inline void st_raw_audio_test_preamble(struct sync_test_output *st, uint6
 static void st_raw_audio(void *data, struct audio_data *frames)
 {
 	auto *st = (struct sync_test_output *)data;
-
-	if (!st->start_ts)
-		return;
 
 	if (st->detect_mode == SYNC_TEST_DETECT_AV_OFFSET) {
 		for (uint32_t i = 0; i < frames->frames; i++) {
@@ -1376,18 +1443,195 @@ static void st_raw_audio(void *data, struct audio_data *frames)
 	}
 }
 
+static uint64_t video_pts_to_ns(const struct sync_test_output *st, int64_t pts)
+{
+	if (pts <= 0 || !st->video_fps_num)
+		return 0;
+	return util_mul_div64((uint64_t)pts, 1000000000ULL, st->video_fps_num);
+}
+
+static uint64_t audio_pts_to_ns(const struct sync_test_output *st, int64_t pts)
+{
+	if (pts <= 0 || !st->audio_sample_rate)
+		return 0;
+	return samples_to_ns((uint64_t)pts, st->audio_sample_rate);
+}
+
+static void fill_analyzer_packet(struct encoder_packet *packet, struct encoder_frame *frame, enum obs_encoder_type type)
+{
+	static uint8_t placeholder;
+
+	packet->data = &placeholder;
+	packet->size = sizeof(placeholder);
+	packet->pts = frame->pts;
+	packet->dts = frame->pts;
+	packet->type = type;
+	packet->keyframe = type == OBS_ENCODER_VIDEO;
+}
+
+static void *analyzer_encoder_create(obs_data_t *settings, obs_encoder_t *)
+{
+	return (void *)(uintptr_t)obs_data_get_int(settings, "session_ptr");
+}
+
+static void analyzer_encoder_destroy(void *) {}
+
+static const char *video_analyzer_encoder_name(void *)
+{
+	return "AV Sync Video Analyzer";
+}
+
+static const char *audio_analyzer_encoder_name(void *)
+{
+	return "AV Sync Audio Analyzer";
+}
+
+static void video_analyzer_get_info(void *, struct video_scale_info *info)
+{
+	info->format = VIDEO_FORMAT_I420;
+}
+
+static void audio_analyzer_get_info(void *, struct audio_convert_info *info)
+{
+	info->format = AUDIO_FORMAT_FLOAT_PLANAR;
+}
+
+static size_t audio_analyzer_frame_size(void *)
+{
+	return ANALYZER_AUDIO_FRAME_SIZE;
+}
+
+static bool video_analyzer_encode(void *data, struct encoder_frame *frame, struct encoder_packet *packet,
+				  bool *received_packet)
+{
+	auto *st = (struct sync_test_output *)data;
+	if (!st || !frame || !packet || !received_packet)
+		return false;
+
+	struct video_data video = {};
+	for (size_t i = 0; i < MAX_AV_PLANES; i++) {
+		video.data[i] = frame->data[i];
+		video.linesize[i] = frame->linesize[i];
+	}
+	video.timestamp = video_pts_to_ns(st, frame->pts);
+	st_raw_video(st, &video);
+
+	fill_analyzer_packet(packet, frame, OBS_ENCODER_VIDEO);
+	*received_packet = true;
+	return true;
+}
+
+static bool audio_analyzer_encode(void *data, struct encoder_frame *frame, struct encoder_packet *packet,
+				  bool *received_packet)
+{
+	auto *st = (struct sync_test_output *)data;
+	if (!st || !frame || !packet || !received_packet)
+		return false;
+
+	struct audio_data audio = {};
+	for (size_t i = 0; i < MAX_AV_PLANES; i++)
+		audio.data[i] = frame->data[i];
+	audio.frames = frame->frames;
+	audio.timestamp = audio_pts_to_ns(st, frame->pts);
+	st_raw_audio(st, &audio);
+
+	fill_analyzer_packet(packet, frame, OBS_ENCODER_AUDIO);
+	*received_packet = true;
+	return true;
+}
+
+static void st_packet_timing(obs_output_t *, struct encoder_packet *packet, struct encoder_packet_time *packet_time,
+			     void *param)
+{
+	auto *st = (struct sync_test_output *)param;
+	if (!st || !packet || packet->type != OBS_ENCODER_VIDEO || !packet_time || packet_time->pts < 0)
+		return;
+
+	const uint64_t pts_ns = video_pts_to_ns(st, packet_time->pts);
+	if (packet_time->cts < pts_ns)
+		return;
+
+	std::lock_guard<std::mutex> lock(st->clock_mutex);
+	if (st->cts_origin_valid)
+		return;
+
+	st->cts_origin_ns = packet_time->cts - pts_ns;
+	st->cts_origin_valid = true;
+	blog(LOG_INFO, "Analyzer compositor CTS anchor established at %" PRIu64 " ns", st->cts_origin_ns);
+}
+
+static void st_encoded_packet(void *, struct encoder_packet *) {}
+
+static bool st_create_analyzer_encoders(struct sync_test_output *st)
+{
+	video_t *program_video = obs_get_video();
+	audio_t *program_audio = obs_get_audio();
+	if (!program_video || !program_audio) {
+		blog(LOG_ERROR, "Program video or OBS audio is unavailable while creating analyzer encoders");
+		return false;
+	}
+
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_int(settings, "session_ptr", (long long)(uintptr_t)st);
+
+	obs_encoder_t *video =
+		obs_video_encoder_create(VIDEO_ANALYZER_ENCODER_ID, "av-sync-video-analyzer", settings, nullptr);
+	obs_encoder_t *audio =
+		obs_audio_encoder_create(AUDIO_ANALYZER_ENCODER_ID, "av-sync-audio-analyzer", settings, 0, nullptr);
+	obs_data_release(settings);
+	if (!video || !audio) {
+		blog(LOG_ERROR, "Failed to create analyzer encoders");
+		obs_encoder_release(video);
+		obs_encoder_release(audio);
+		return false;
+	}
+
+	obs_encoder_set_video(video, program_video);
+	obs_encoder_set_audio(audio, program_audio);
+	obs_output_set_video_encoder(st->context, video);
+	obs_output_set_audio_encoder(st->context, audio, 0);
+	obs_encoder_release(video);
+	obs_encoder_release(audio);
+	return true;
+}
+
+extern "C" void register_sync_test_analyzer_encoders()
+{
+	struct obs_encoder_info video = {};
+	video.id = VIDEO_ANALYZER_ENCODER_ID;
+	video.type = OBS_ENCODER_VIDEO;
+	video.codec = "av-sync-analyzer-video";
+	video.get_name = video_analyzer_encoder_name;
+	video.create = analyzer_encoder_create;
+	video.destroy = analyzer_encoder_destroy;
+	video.encode = video_analyzer_encode;
+	video.get_video_info = video_analyzer_get_info;
+	obs_register_encoder(&video);
+
+	struct obs_encoder_info audio = {};
+	audio.id = AUDIO_ANALYZER_ENCODER_ID;
+	audio.type = OBS_ENCODER_AUDIO;
+	audio.codec = "av-sync-analyzer-audio";
+	audio.get_name = audio_analyzer_encoder_name;
+	audio.create = analyzer_encoder_create;
+	audio.destroy = analyzer_encoder_destroy;
+	audio.encode = audio_analyzer_encode;
+	audio.get_frame_size = audio_analyzer_frame_size;
+	audio.get_audio_info = audio_analyzer_get_info;
+	obs_register_encoder(&audio);
+}
+
 extern "C" void register_sync_test_output()
 {
 	struct obs_output_info info = {};
 	info.id = OUTPUT_ID;
-	info.flags = OBS_OUTPUT_AV;
+	info.flags = OBS_OUTPUT_AV | OBS_OUTPUT_ENCODED;
 	info.get_name = st_get_name;
 	info.create = st_create;
 	info.destroy = st_destroy;
 	info.start = st_start;
 	info.stop = st_stop;
-	info.raw_video = st_raw_video;
-	info.raw_audio = st_raw_audio;
+	info.encoded_packet = st_encoded_packet;
 
 	obs_register_output(&info);
 }

@@ -21,6 +21,7 @@ struct st_qr_data
 	uint64_t sequence = 0;
 	uint64_t ntp_ms = 0;
 	uint32_t mode = 0;
+	bool has_sequence = false;
 	bool has_ntp_ms = false;
 	bool valid = 0;
 
@@ -36,6 +37,7 @@ struct st_qr_data
 		sequence = 0;
 		ntp_ms = 0;
 		mode = 0;
+		has_sequence = false;
 		has_ntp_ms = false;
 		valid = false;
 	}
@@ -50,6 +52,12 @@ struct st_qr_data
 			ntp_ms = value * 1000ULL;
 			has_ntp_ms = true;
 		}
+	}
+
+	void normalize()
+	{
+		if (protocol >= 2 && has_ntp_ms && sequence >= SYNC_TEST_NTP_EPOCH_S_MIN && index <= 0xFF)
+			sequence = index;
 	}
 
 	bool _decode_kv(char *param)
@@ -87,6 +95,7 @@ struct st_qr_data
 			return true;
 		case 's':
 			sequence = strtoull(val, nullptr, 10);
+			has_sequence = true;
 			set_ntp_time(sequence);
 			return true;
 		case 'n':
@@ -110,8 +119,8 @@ struct st_qr_data
 			blog(LOG_WARNING, "p: out of range: %u", protocol);
 			return false;
 		}
-		if (protocol >= 2 && sequence == 0 && !has_ntp_ms) {
-			blog(LOG_WARNING, "s: missing or zero sequence");
+		if (protocol >= 2 && !has_sequence && !has_ntp_ms) {
+			blog(LOG_WARNING, "s: missing sequence");
 			return false;
 		}
 		if (protocol == 1 && (f < 10 || 32000 < f)) {
@@ -151,6 +160,7 @@ struct st_qr_data
 				return false;
 			param = strtok_r(NULL, ",", &saveptr);
 		}
+		normalize();
 		if (!check())
 			return false;
 		valid = true;

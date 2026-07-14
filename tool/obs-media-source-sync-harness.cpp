@@ -3,6 +3,9 @@
 #include <callback/calldata.h>
 #include <callback/signal.h>
 
+#include <QApplication>
+#include <QEventLoop>
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -18,10 +21,13 @@
 namespace {
 
 constexpr const char *kOutputId = "net.nagater.obs-audio-video-sync-dock.output";
+constexpr const char *kVideoAnalyzerEncoderId = "net.nagater.obs-audio-video-sync-dock.video-analyzer";
+constexpr const char *kAudioAnalyzerEncoderId = "net.nagater.obs-audio-video-sync-dock.audio-analyzer";
 
 struct Options
 {
 	std::string media_path = "release/av-offset-pattern-3000.mp4";
+	std::string browser_url;
 	std::string obs_root = "/Users/mstarzak/work/obs-studio-32.1.2";
 	std::string plugin_root = "release-obs-32.1.2/obs-audio-video-sync-dock.plugin";
 	int width = 1280;
@@ -40,6 +46,7 @@ struct Options
 	std::string record_path;
 	std::string record_video_encoder = "obs_x264";
 	std::string record_audio_encoder = "ffmpeg_pcm_s16le";
+	bool trace_markers = false;
 };
 
 struct Measurement
@@ -57,17 +64,22 @@ struct Measurement
 struct HarnessState
 {
 	std::vector<Measurement> measurements;
+	size_t video_markers = 0;
+	size_t audio_markers = 0;
+	bool trace_markers = false;
 };
 
 static void usage(const char *argv0)
 {
-	std::fprintf(stderr,
-		     "Usage: %s [--media path] [--seconds n] [--events n] [--fps n[/d]] [--size WxH]\n"
-		     "          [--obs-root path] [--plugin path] [--no-loop] [--hw-decode]\n"
-		     "          [--source-audio-offset-ms ms] [--start-media-before-output]\n"
-		     "          [--audio-buffer-ms ms] [--dynamic-audio-buffering]\n"
-		     "          [--record path] [--record-video-encoder id|auto] [--record-audio-encoder id]\n",
-		     argv0);
+	std::fprintf(
+		stderr,
+		"Usage: %s [--media path | --browser-url url] [--seconds n] [--events n] [--fps n[/d]] [--size WxH]\n"
+		"          [--obs-root path] [--plugin path] [--no-loop] [--hw-decode]\n"
+		"          [--source-audio-offset-ms ms] [--start-media-before-output]\n"
+		"          [--audio-buffer-ms ms] [--dynamic-audio-buffering]\n"
+		"          [--record path] [--record-video-encoder id|auto] [--record-audio-encoder id]\n"
+		"          [--trace-markers]\n",
+		argv0);
 }
 
 static bool parse_int(const char *text, int *value)
@@ -132,6 +144,13 @@ static bool parse_options(int argc, char **argv, Options *options)
 			if (!value)
 				return false;
 			options->media_path = value;
+		}
+		else if (!std::strcmp(argv[i], "--browser-url")) {
+			const char *value = need_value(argv[i]);
+			if (!value)
+				return false;
+			options->browser_url = value;
+			options->defer_media_start = false;
 		}
 		else if (!std::strcmp(argv[i], "--obs-root")) {
 			const char *value = need_value(argv[i]);
@@ -210,6 +229,18 @@ static bool parse_options(int argc, char **argv, Options *options)
 		else if (!std::strcmp(argv[i], "--dynamic-audio-buffering")) {
 			options->fixed_audio_buffering = false;
 		}
+		else if (!std::strcmp(argv[i], "--trace-markers")) {
+			options->trace_markers = true;
+		}
+		else if (!std::strcmp(argv[i], "--disable-gpu")) {
+			/* CEF/obs-browser command-line switch; keep it in argv for CefMainArgs. */
+		}
+		else if (!std::strcmp(argv[i], "--in-process-gpu")) {
+			/* CEF/obs-browser command-line switch; keep it in argv for CefMainArgs. */
+		}
+		else if (!std::strcmp(argv[i], "--single-process")) {
+			/* CEF/obs-browser command-line switch; keep it in argv for CefMainArgs. */
+		}
 		else if (!std::strcmp(argv[i], "--help")) {
 			return false;
 		}
@@ -222,6 +253,48 @@ static bool parse_options(int argc, char **argv, Options *options)
 	return true;
 }
 
+static void on_video_marker_found(void *param, calldata_t *cd)
+{
+	auto *state = static_cast<HarnessState *>(param);
+	auto *marker = static_cast<video_marker_found_s *>(calldata_ptr(cd, "data"));
+	if (!marker || marker->protocol < 2)
+		return;
+
+	state->video_markers++;
+	if (!state->trace_markers)
+		return;
+
+	std::printf("VIDEO sequence=%llu ts_ms=%.3f score=%.3f glass_ms=", (unsigned long long)marker->sequence,
+		    (double)marker->timestamp / 1000000.0, marker->score);
+	if (marker->has_glass_to_glass)
+		std::printf("%.3f", (double)marker->glass_to_glass_ns / 1000000.0);
+	else
+		std::printf("-");
+	std::printf("\n");
+	std::fflush(stdout);
+}
+
+static void on_audio_marker_found(void *param, calldata_t *cd)
+{
+	auto *state = static_cast<HarnessState *>(param);
+	auto *marker = static_cast<audio_marker_found_s *>(calldata_ptr(cd, "data"));
+	if (!marker || marker->protocol < 2)
+		return;
+
+	state->audio_markers++;
+	if (!state->trace_markers)
+		return;
+
+	std::printf("AUDIO sequence=%llu ts_ms=%.3f score=%.3f\n", (unsigned long long)marker->sequence,
+		    (double)marker->timestamp / 1000000.0, marker->score);
+	std::fflush(stdout);
+}
+
+static bool use_browser_source(const Options &options)
+{
+	return !options.browser_url.empty();
+}
+
 static obs_data_t *create_media_settings(const Options &options, bool include_file)
 {
 	obs_data_t *settings = obs_data_create();
@@ -232,6 +305,22 @@ static obs_data_t *create_media_settings(const Options &options, bool include_fi
 	obs_data_set_bool(settings, "close_when_inactive", false);
 	obs_data_set_bool(settings, "hw_decode", options.hw_decode);
 	obs_data_set_int(settings, "speed_percent", 100);
+	return settings;
+}
+
+static obs_data_t *create_browser_settings(const Options &options)
+{
+	obs_data_t *settings = obs_data_create();
+	obs_data_set_bool(settings, "is_local_file", false);
+	obs_data_set_string(settings, "url", options.browser_url.c_str());
+	obs_data_set_int(settings, "width", options.width);
+	obs_data_set_int(settings, "height", options.height);
+	obs_data_set_bool(settings, "fps_custom", true);
+	obs_data_set_int(settings, "fps", options.fps_num / std::max(1, options.fps_den));
+	obs_data_set_bool(settings, "shutdown", false);
+	obs_data_set_bool(settings, "restart_when_active", false);
+	obs_data_set_bool(settings, "reroute_audio", true);
+	obs_data_set_int(settings, "webpage_control_level", 1);
 	return settings;
 }
 
@@ -500,10 +589,20 @@ int main(int argc, char **argv)
 		return 2;
 	}
 
+	std::vector<const char *> obs_argv(argv, argv + argc);
+	obs_set_cmdline_args(argc, obs_argv.data());
+
+	int qt_argc = 1;
+	char *qt_argv[] = {argv[0], nullptr};
+	QApplication qt_app(qt_argc, qt_argv);
+
 	const std::string obs_build = options.obs_root + "/build_macos";
 	const std::string obs_ffmpeg_plugin = obs_build + "/plugins/obs-ffmpeg/RelWithDebInfo/obs-ffmpeg.plugin";
 	const std::string obs_ffmpeg_bin = obs_ffmpeg_plugin + "/Contents/MacOS/obs-ffmpeg";
 	const std::string obs_ffmpeg_data = obs_ffmpeg_plugin + "/Contents/Resources";
+	const std::string obs_browser_plugin = "/Applications/OBS.app/Contents/PlugIns/obs-browser.plugin";
+	const std::string obs_browser_bin = obs_browser_plugin + "/Contents/MacOS/obs-browser";
+	const std::string obs_browser_data = obs_browser_plugin + "/Contents/Resources";
 	const std::string obs_x264_plugin = "/Applications/OBS.app/Contents/PlugIns/obs-x264.plugin";
 	const std::string obs_x264_bin = obs_x264_plugin + "/Contents/MacOS/obs-x264";
 	const std::string obs_x264_data = obs_x264_plugin + "/Contents/Resources";
@@ -555,6 +654,10 @@ int main(int argc, char **argv)
 		obs_shutdown();
 		return 1;
 	}
+	if (use_browser_source(options) && !load_module(obs_browser_bin, obs_browser_data)) {
+		obs_shutdown();
+		return 1;
+	}
 	if (!options.record_path.empty() && file_exists(obs_x264_bin) && !load_module(obs_x264_bin, obs_x264_data)) {
 		obs_shutdown();
 		return 1;
@@ -572,30 +675,38 @@ int main(int argc, char **argv)
 		return 1;
 	}
 
-	obs_data_t *media_settings = create_media_settings(options, !options.defer_media_start);
-	obs_source_t *media_source = obs_source_create_private("ffmpeg_source", "av-offset-media", media_settings);
-	obs_data_release(media_settings);
-	if (!media_source) {
-		std::fprintf(stderr, "obs_source_create(ffmpeg_source) failed\n");
+	obs_data_t *source_settings = use_browser_source(options)
+					      ? create_browser_settings(options)
+					      : create_media_settings(options, !options.defer_media_start);
+	if (use_browser_source(options))
+		std::printf("BROWSER_AUDIO reroute_audio=true control_audio_via_obs=true\n");
+	obs_source_t *test_source = obs_source_create_private(
+		use_browser_source(options) ? "browser_source" : "ffmpeg_source",
+		use_browser_source(options) ? "av-offset-browser" : "av-offset-media", source_settings);
+	obs_data_release(source_settings);
+	if (!test_source) {
+		std::fprintf(stderr, "obs_source_create(%s) failed\n",
+			     use_browser_source(options) ? "browser_source" : "ffmpeg_source");
 		obs_shutdown();
 		return 1;
 	}
 
-	obs_source_set_sync_offset(media_source, (int64_t)std::llround(options.source_audio_offset_ms * 1000000.0));
+	obs_source_set_sync_offset(test_source, (int64_t)std::llround(options.source_audio_offset_ms * 1000000.0));
 
-	obs_scene_t *scene = obs_scene_create_private("media-source-sync-test");
+	obs_scene_t *scene = obs_scene_create_private(use_browser_source(options) ? "browser-source-sync-test"
+										  : "media-source-sync-test");
 	if (!scene) {
 		std::fprintf(stderr, "obs_scene_create failed\n");
-		obs_source_release(media_source);
+		obs_source_release(test_source);
 		obs_shutdown();
 		return 1;
 	}
 
-	obs_sceneitem_t *item = obs_scene_add(scene, media_source);
+	obs_sceneitem_t *item = obs_scene_add(scene, test_source);
 	if (!item) {
 		std::fprintf(stderr, "obs_scene_add failed\n");
 		obs_scene_release(scene);
-		obs_source_release(media_source);
+		obs_source_release(test_source);
 		obs_shutdown();
 		return 1;
 	}
@@ -621,12 +732,33 @@ int main(int argc, char **argv)
 		obs_set_output_source(0, nullptr);
 		obs_sceneitem_remove(item);
 		obs_scene_release(scene);
-		obs_source_release(media_source);
+		obs_source_release(test_source);
 		obs_shutdown();
 		return 1;
 	}
+	obs_encoder_t *analyzer_video = obs_output_get_video_encoder(output);
+	obs_encoder_t *analyzer_audio = obs_output_get_audio_encoder(output, 0);
+	if (!analyzer_video || !analyzer_audio ||
+	    std::strcmp(obs_encoder_get_id(analyzer_video), kVideoAnalyzerEncoderId) ||
+	    std::strcmp(obs_encoder_get_id(analyzer_audio), kAudioAnalyzerEncoderId)) {
+		std::fprintf(stderr, "sync-test output did not attach the expected analyzer encoders\n");
+		obs_output_release(output);
+		obs_set_output_source(0, nullptr);
+		obs_sceneitem_remove(item);
+		obs_scene_release(scene);
+		obs_source_release(test_source);
+		obs_shutdown();
+		return 1;
+	}
+	std::printf("ANALYZER video=%s audio=%s mixer=1\n", obs_encoder_get_id(analyzer_video),
+		    obs_encoder_get_id(analyzer_audio));
 
 	HarnessState state;
+	state.trace_markers = options.trace_markers;
+	signal_handler_connect(obs_output_get_signal_handler(output), "video_marker_found", on_video_marker_found,
+			       &state);
+	signal_handler_connect(obs_output_get_signal_handler(output), "audio_marker_found", on_audio_marker_found,
+			       &state);
 	signal_handler_connect(obs_output_get_signal_handler(output), "sync_found", on_sync_found, &state);
 
 	obs_encoder_t *record_video_encoder = nullptr;
@@ -639,7 +771,7 @@ int main(int argc, char **argv)
 			obs_set_output_source(0, nullptr);
 			obs_sceneitem_remove(item);
 			obs_scene_release(scene);
-			obs_source_release(media_source);
+			obs_source_release(test_source);
 			obs_shutdown();
 			return 1;
 		}
@@ -654,7 +786,7 @@ int main(int argc, char **argv)
 			obs_set_output_source(0, nullptr);
 			obs_sceneitem_remove(item);
 			obs_scene_release(scene);
-			obs_source_release(media_source);
+			obs_source_release(test_source);
 			obs_shutdown();
 			return 1;
 		}
@@ -671,34 +803,42 @@ int main(int argc, char **argv)
 		obs_set_output_source(0, nullptr);
 		obs_sceneitem_remove(item);
 		obs_scene_release(scene);
-		obs_source_release(media_source);
+		obs_source_release(test_source);
 		obs_shutdown();
 		return 1;
 	}
 
-	if (options.defer_media_start) {
+	if (!use_browser_source(options) && options.defer_media_start) {
 		obs_data_t *start_settings = create_media_settings(options, true);
-		obs_source_update(media_source, start_settings);
+		obs_source_update(test_source, start_settings);
 		obs_data_release(start_settings);
 	}
-	else {
-		obs_source_media_restart(media_source);
+	else if (!use_browser_source(options)) {
+		obs_source_media_restart(test_source);
 	}
 
 	const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(options.seconds);
 	while (std::chrono::steady_clock::now() < deadline) {
 		if (options.target_events > 0 && (int)state.measurements.size() >= options.target_events)
 			break;
+		qt_app.processEvents(QEventLoop::AllEvents, 50);
 		std::this_thread::sleep_for(std::chrono::milliseconds(50));
 	}
 
 	stop_output(output);
 	stop_output(record_output);
-	obs_source_media_stop(media_source);
+	if (!use_browser_source(options))
+		obs_source_media_stop(test_source);
 	std::this_thread::sleep_for(std::chrono::milliseconds(250));
+	std::printf("MARKERS video=%zu audio=%zu sync=%zu\n", state.video_markers, state.audio_markers,
+		    state.measurements.size());
 	print_summaries(state.measurements);
 
 	signal_handler_disconnect(obs_output_get_signal_handler(output), "sync_found", on_sync_found, &state);
+	signal_handler_disconnect(obs_output_get_signal_handler(output), "audio_marker_found", on_audio_marker_found,
+				  &state);
+	signal_handler_disconnect(obs_output_get_signal_handler(output), "video_marker_found", on_video_marker_found,
+				  &state);
 	obs_output_release(record_output);
 	obs_encoder_release(record_video_encoder);
 	obs_encoder_release(record_audio_encoder);
@@ -706,7 +846,7 @@ int main(int argc, char **argv)
 	obs_set_output_source(0, nullptr);
 	obs_sceneitem_remove(item);
 	obs_scene_release(scene);
-	obs_source_release(media_source);
+	obs_source_release(test_source);
 	obs_wait_for_destroy_queue();
 	obs_shutdown();
 	return state.measurements.empty() ? 1 : 0;

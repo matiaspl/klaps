@@ -24,12 +24,17 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #include "plugin-macros.generated.h"
 
+#if LIBOBS_API_VER < MAKE_SEMANTIC_VERSION(31, 0, 0)
+#error "obs-audio-video-sync-dock requires OBS Studio 31 or newer"
+#endif
+
 OBS_DECLARE_MODULE()
 OBS_MODULE_USE_DEFAULT_LOCALE(PLUGIN_NAME, "en-US")
 
 #define CONFIG_SECTION_NAME "AudioVideoSyncDock"
 
 void *create_sync_test_dock();
+void register_sync_test_analyzer_encoders();
 void register_sync_test_output();
 void register_sync_test_monitor(bool list);
 
@@ -52,6 +57,7 @@ bool obs_module_load(void)
 #endif
 	bool list_source = cfg && config_get_bool(cfg, CONFIG_SECTION_NAME, "ListMonitor");
 
+	register_sync_test_analyzer_encoders();
 	register_sync_test_output();
 	register_sync_test_monitor(list_source);
 	blog(LOG_INFO, "plugin loaded (version %s)", PLUGIN_VERSION);

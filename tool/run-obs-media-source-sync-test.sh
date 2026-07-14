@@ -17,8 +17,15 @@ if [ ! -x "$HARNESS" ] || [ "$SOURCE" -nt "$HARNESS" ] || [ "$ROOT_DIR/src/sync-
 		-I"$OBS_ROOT/libobs/callback" \
 		-I"$OBS_BUILD/config" \
 		-I"$OBS_DEPS/include" \
+		-I"$QT_DEPS/lib/QtWidgets.framework/Headers" \
+		-I"$QT_DEPS/lib/QtGui.framework/Headers" \
+		-I"$QT_DEPS/lib/QtCore.framework/Headers" \
+		-F"$QT_DEPS/lib" \
 		-F"$OBS_BUILD/libobs/RelWithDebInfo" \
 		-framework libobs \
+		-framework QtWidgets \
+		-framework QtGui \
+		-framework QtCore \
 		-Wl,-rpath,"$OBS_BUILD/libobs/RelWithDebInfo" \
 		-Wl,-rpath,"$OBS_BUILD/libobs-metal/RelWithDebInfo" \
 		-Wl,-rpath,"$OBS_BUILD/libobs-opengl/RelWithDebInfo" \
