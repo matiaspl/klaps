@@ -207,8 +207,9 @@ void SyncTestDock::on_start_stop()
 
 void SyncTestDock::on_reset()
 {
-	const int detect_mode = sync_test ? active_detect_mode
-					  : (modeSelector ? modeSelector->currentData().toInt() : SYNC_TEST_DETECT_AV_OFFSET);
+	const int detect_mode =
+		sync_test ? active_detect_mode
+			  : (modeSelector ? modeSelector->currentData().toInt() : SYNC_TEST_DETECT_AV_OFFSET);
 	reset_analysis_stats(detect_mode);
 }
 
@@ -223,8 +224,8 @@ void SyncTestDock::reset_analysis_stats(int detect_mode)
 	av_offset_samples.clear();
 
 	if (latencyLabel)
-		latencyLabel->setText(
-			obs_module_text(detect_mode == SYNC_TEST_DETECT_AV_OFFSET ? "Label.AVOffset" : "Label.Latency"));
+		latencyLabel->setText(obs_module_text(detect_mode == SYNC_TEST_DETECT_AV_OFFSET ? "Label.AVOffset"
+												: "Label.Latency"));
 	if (latencyDisplay)
 		latencyDisplay->setText(QStringLiteral("-"));
 	if (latencyPolarity)
