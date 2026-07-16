@@ -231,9 +231,3 @@ Related background: [A random stackexchange post](https://dsp.stackexchange.com/
 [multipath delay-estimation bias](https://arxiv.org/abs/2012.05790),
 [ITU-T Q.23](https://www.itu.int/rec/T-REC-Q.23/en), and
 [ITU-T Q.24](https://www.itu.int/rec/T-REC-Q.24/en).
-
-
-## Build flow
-See [main.yml](.github/workflows/main.yml) for the exact build flow. Maintainers
-can configure Developer ID signing and notarization using the
-[release-signing guide](docs/release-signing.md).
