@@ -2,7 +2,6 @@
 .*.swp
 .DS_Store
 /release/
-/docs/time.cgi
 
 .vscode
 .idea
