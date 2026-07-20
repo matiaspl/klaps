@@ -243,8 +243,8 @@ else()
 			set(CPACK_DEBIAN_PACKAGE_MAINTAINER "${LINUX_MAINTAINER_EMAIL}")
 			set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
 			set(PKG_SUFFIX "-linux-x86_64" CACHE STRING "Suffix of package name")
-			set(CPACK_DEBIAN_PACKAGE_CONFLICTS "obs-avs;obs-audio-video-sync-dock")
-			set(CPACK_DEBIAN_PACKAGE_REPLACES "obs-avs;obs-audio-video-sync-dock")
+			set(CPACK_DEBIAN_PACKAGE_CONFLICTS "obs-avs, obs-audio-video-sync-dock")
+			set(CPACK_DEBIAN_PACKAGE_REPLACES "obs-avs, obs-audio-video-sync-dock")
 			set(CPACK_PACKAGE_FILE_NAME
 				"${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}${PKG_SUFFIX}")
 
