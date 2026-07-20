@@ -328,7 +328,7 @@
 			<label class="toggle"><input id="remoteTime" type="checkbox" checked> Remote time (absolute glass-to-glass)</label>
 			<div class="field">
 				<label for="timeEndpoint">Time endpoint</label>
-				<input id="timeEndpoint" value="time.php" placeholder="blank uses this device clock">
+				<input id="timeEndpoint" value="/cgi-bin/klaps-time.cgi" placeholder="blank uses this device clock">
 			</div>
 		</div>
 
@@ -425,7 +425,7 @@
 		const QR_ECC_CODEWORDS = 26;
 		const QR_DISPLAY_LEAD_MS = 700;
 		const AUDIO_SCOPE_WINDOW_MS = 1000;
-		const GITHUB_PAGES_TIME_ENDPOINT = "https://broadcast-ready.com/klaps/time.php";
+		const GITHUB_PAGES_TIME_ENDPOINT = "https://broadcast-ready.com/cgi-bin/klaps-time.cgi";
 		const VIDEO_NEUTRAL = "#7f7f7f";
 		const TRIM_STORAGE_KEY = "avs.synced.videoTrimMs";
 
@@ -676,7 +676,7 @@
 			const params = new URLSearchParams(location.search);
 			if (params.has("endpoint"))
 				return;
-			if (el.timeEndpoint.value.trim() === "time.php")
+			if (el.timeEndpoint.value.trim() === "/cgi-bin/klaps-time.cgi")
 				el.timeEndpoint.value = GITHUB_PAGES_TIME_ENDPOINT;
 		}
 
