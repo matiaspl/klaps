@@ -426,6 +426,11 @@
 		const QR_DISPLAY_LEAD_MS = 700;
 		const AUDIO_SCOPE_WINDOW_MS = 1000;
 		const GITHUB_PAGES_TIME_ENDPOINT = "https://broadcast-ready.com/klaps/time.php";
+		const CLOCK_SYNC_TARGET_SAMPLES = 5;
+		const CLOCK_SYNC_MIN_SAMPLES = 3;
+		const CLOCK_SYNC_MAX_ATTEMPTS = 7;
+		const CLOCK_SYNC_SAMPLE_DELAY_MS = 40;
+		const CLOCK_SYNC_REQUEST_TIMEOUT_MS = 5000;
 		const VIDEO_NEUTRAL = "#7f7f7f";
 		const TRIM_STORAGE_KEY = "avs.synced.videoTrimMs";
 
@@ -685,30 +690,44 @@
 				return;
 			state.runOffsetMs = state.offsetMs;
 			state.lastBeatTargetMs = 0;
+			updateStatus();
 		}
 
-		async function syncClock() {
+		async function fetchClockSample() {
 			if (!useRemoteTime()) {
 				setLocalClock();
-				return;
+				return null;
 			}
 
 			const endpoint = el.timeEndpoint.value.trim();
 			const t0 = localEpochMs();
-			const response = await fetch(endpoint, { cache: "no-store" });
-			const contentType = response.headers.get("content-type") || "";
-			let text = "";
-			if (contentType.includes("json") || contentType.includes("text"))
-				text = await response.text();
-			const t1 = localEpochMs();
-			const parsed = parseServerTime(text, response);
-			if (!parsed)
-				throw new Error("No parseable server time");
+			const controller = new AbortController();
+			const timeout = window.setTimeout(() => controller.abort(), CLOCK_SYNC_REQUEST_TIMEOUT_MS);
+			try {
+				const response = await fetch(endpoint, { cache: "no-store", signal: controller.signal });
+				if (!response.ok)
+					throw new Error(`Time endpoint returned HTTP ${response.status}`);
+				const contentType = response.headers.get("content-type") || "";
+				let text = "";
+				if (contentType.includes("json") || contentType.includes("text"))
+					text = await response.text();
+				const t1 = localEpochMs();
+				const parsed = parseServerTime(text, response);
+				if (!parsed)
+					throw new Error("No parseable server time");
 
-			const rttMs = t1 - t0;
-			const midpoint = (t0 + t1) * 0.5;
-			const offsetMs = parsed.serverMs - midpoint;
-			state.offsetSamples.push({ offsetMs, rttMs, precision: parsed.precision });
+				const rttMs = t1 - t0;
+				const midpoint = (t0 + t1) * 0.5;
+				const offsetMs = parsed.serverMs - midpoint;
+				return { offsetMs, rttMs, precision: parsed.precision };
+			}
+			finally {
+				window.clearTimeout(timeout);
+			}
+		}
+
+		function applyClockSamples(samples) {
+			state.offsetSamples.push(...samples);
 			state.offsetSamples.sort((a, b) => a.rttMs - b.rttMs);
 			state.offsetSamples = state.offsetSamples.slice(0, 9);
 
@@ -716,8 +735,56 @@
 			const offsets = best.map((sample) => sample.offsetMs).sort((a, b) => a - b);
 			state.offsetMs = offsets[Math.floor(offsets.length / 2)];
 			state.lastRttMs = best[0].rttMs;
-			state.clockLabel = parsed.precision === "date-header" ? "http date" : "http time";
+			state.clockLabel = best[0].precision === "date-header" ? "http date" : "http time";
 			updateStatus();
+		}
+
+		async function syncClock() {
+			const sample = await fetchClockSample();
+			if (sample)
+				applyClockSamples([sample]);
+		}
+
+		async function lockClock() {
+			if (!useRemoteTime()) {
+				setLocalClock();
+				return;
+			}
+
+			/* The first HTTPS request may include DNS, TCP and TLS setup. Its asymmetric
+			 * delay is not a clock offset, so warm the connection and discard it. */
+			const samples = [];
+			let lastError = null;
+			try {
+				await fetchClockSample();
+			}
+			catch (error) {
+				lastError = error;
+			}
+			for (let attempt = 0;
+			     attempt < CLOCK_SYNC_MAX_ATTEMPTS && samples.length < CLOCK_SYNC_TARGET_SAMPLES;
+			     attempt++) {
+				try {
+					const sample = await fetchClockSample();
+					if (sample)
+						samples.push(sample);
+				}
+				catch (error) {
+					lastError = error;
+				}
+				if (samples.length < CLOCK_SYNC_TARGET_SAMPLES)
+					await new Promise((resolve) => window.setTimeout(resolve, CLOCK_SYNC_SAMPLE_DELAY_MS));
+			}
+
+			if (samples.length < CLOCK_SYNC_MIN_SAMPLES) {
+				const detail = lastError ? `: ${lastError.message}` : "";
+				throw new Error(`Clock lock got only ${samples.length} samples${detail}`);
+			}
+
+			state.offsetSamples = [];
+			applyClockSamples(samples);
+			log(`clock locked: ${fmtMs(state.offsetMs)} offset, ${fmtMs(state.lastRttMs, 2)} RTT, ` +
+			    `${samples.length} samples`);
 		}
 
 		function log(line) {
@@ -2048,7 +2115,7 @@
 			state.lastStatusUpdateMs = performance.now();
 			el.clockSource.textContent = state.clockLabel;
 			el.clockSource.className = state.clockLabel === "local" ? "warn" : "ok";
-			el.clockOffset.textContent = fmtMs(state.offsetMs);
+			el.clockOffset.textContent = fmtMs(state.running ? state.runOffsetMs : state.offsetMs);
 			el.clockRtt.textContent = state.lastRttMs ? fmtMs(state.lastRttMs, 2) : "-";
 			el.audioProbe.textContent = state.audioProbeLabel;
 			el.audioProbe.className = state.audioProbeClass;
@@ -2126,10 +2193,12 @@
 
 			if (state.autoSync && useRemoteTime()) {
 				try {
-					await syncClock();
+					await lockClock();
 				}
 				catch (error) {
 					log(`sync failed: ${error.message}`);
+					stop();
+					return;
 				}
 			}
 			if (token !== state.runToken || !state.starting)
@@ -2283,7 +2352,7 @@
 				resetRunClockSource();
 				return;
 			}
-			syncClock()
+			lockClock()
 				.then(resetRunClockSource)
 				.catch((error) => log(`sync failed: ${error.message}`));
 		});
