@@ -380,9 +380,8 @@
 		"use strict";
 
 		/*
-		 * Protocol-critical constants and synthesis (marker, QR, packet layout,
-		 * fiducial geometry) are identical to ntp-cue-generator.html so the OBS
-		 * analyzer in sync-test-output.cpp decodes this generator unchanged.
+		 * Protocol-critical constants and synthesis (marker, QR, packet layout and
+		 * fiducial geometry) match the v2 protocol decoded by sync-test-output.cpp.
 		 *
 		 * What is new here is the timing core. It is a realtime loop, not a queue:
 		 * every animation frame fires the next audio beat if its start time just came
