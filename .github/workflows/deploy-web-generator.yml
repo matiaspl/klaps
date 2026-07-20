@@ -1,4 +1,4 @@
-name: Deploy AVS Cue Generator
+name: Deploy Klaps Cue Generator
 
 on:
   push:
@@ -33,7 +33,7 @@ jobs:
       run: |
         set -e
         mkdir -p _site
-        base_url="https://matiaspl.github.io/obs-avs"
+        base_url="https://matiaspl.github.io/klaps"
         for file in \
           sync-pattern-6000.mp4 \
           sync-pattern-5994.mp4 \
