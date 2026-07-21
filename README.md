@@ -246,7 +246,7 @@ zero and uses:
 new Sync Offset = current Sync Offset - measured AV Offset
 ```
 
-For example, if the dock reports `+120 ms` (**Audio lagged**) and the source is
+For example, if the dock reports `+120 ms` (**Audio late**) and the source is
 currently at `0 ms`, the proposed Sync Offset is `-120 ms`. If it reports
 `-80 ms` (**Audio early**), the proposed value is `+80 ms`. The confirmation
 dialog shows the source, current value, proposed value, and measurement before
