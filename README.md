@@ -4,10 +4,8 @@
 
 Klaps is an OBS Studio plugin that measures audio offset and video latency. 
 
-The Polish word _"klaps"_ has a dual meaning - it's either a spank or 
-a film clapperboard. In combat conditions both can be used to measure AV 
-synchronization i guess... ;)
-
+The Polish word _"klaps"_ has a dual meaning - it's either a film clapperboard or a single 
+spank. In combat conditions, the latter could also be used to measure AV synchronization, I guess... ;)
 The software is based on solid grounds of Norihiro's [Audio Video Sync Dock](https://obsproject.com/forum/resources/audio-video-sync-dock.2028/). 
 
 The ideas for improvements are mine, the programming work has been done by Codex.
@@ -17,12 +15,12 @@ The ideas for improvements are mine, the programming work has been done by Codex
 The AV offset workflow provides repeatable relative AV sync checks through real
 displays, speakers, cameras, microphones, OBS media and browser sources, and
 recordings. Its key properties are:
-- lower-flash video markers,
-- extended QR Code vocabulary allowing glass-to-glass latency  measurements,
+- longer lasting and lower-flash video markers,
+- extended QR Code vocabulary allowing glass-to-glass latency measurements,
 - new visual markers for naked-eye AV offset assessment (web generator-only),
 - cleaner event timing,
 - sample-centered chirp/tick audio detection designed for echo and reverberation tolerance,
-- DTMF/CRC event identity,
+- DTMF audio event identity with CRC checksum,
 - MOV reference assets that avoid AAC priming and B-frame reorder bias.
 
 The redesigned protocol separates timing from identity: sparse checkerboard 
