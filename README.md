@@ -297,12 +297,22 @@ This is especially useful for measuring the latency of a capture-encode-decode c
 
 ## Science behind the V2 pattern
 
-The v2 patterns uses sparse checkerboard events for video timing and far-field
+The v2 pattern uses sparse checkerboard events for video timing and far-field
 acoustic packets for audio timing and identity. The exact audio event is the
 center of the packet's short tick inside the centered matched-filter marker.
-DTMF uses the standard 4x3 keypad frequencies, an 8-bit event code, CRC8, and
-60 ms symbol guards for identity. The measurement is relative AV offset only;
-it does not claim true source-to-capture transmission latency.
+The QR code stores its metadata as a compact comma-separated ASCII list of
+single-letter key/value pairs, for example `p=2,s=17,q=100,i=17,m=1`.
+`p` selects protocol version 2, `q` gives the checker phase duration in
+milliseconds, and `s` and `i` carry the 8-bit event identity that is matched to
+the audio packet. The live web generator also adds `n`, the target UTC time in
+Unix milliseconds, which lets the analyzer calculate glass-to-glass latency;
+pre-recorded patterns omit it because their playback time is not known in
+advance. The visual payload uses standard level-M QR error correction, while
+unknown or reserved fields are ignored for compatibility. DTMF uses the
+standard 4x3 keypad frequencies, the same 8-bit event code, CRC8, and 60 ms
+symbol guards for identity. The measurement is relative AV offset only;
+without a live timestamp it does not claim true source-to-capture transmission
+latency.
 
 The audio packet is designed to be more tolerant of echo and reverberation than
 a single short tone burst or quadrature amplitude modulation in the audible 
